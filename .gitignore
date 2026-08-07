@@ -2,10 +2,11 @@ node_modules
 # Build outputs
 release/
 dist/
-dist-electron/
+dist-electron
 out/
+*.js
 *.AppImage
 *.deb
 *.tar.gz
 *.zip
-linux-unpacked/release/
+linux-unpacked/

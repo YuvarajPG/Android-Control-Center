@@ -826,13 +826,13 @@ export class DeviceControlService {
       const trackIdentifier = `${playerPackage}/${title}/${artist}`;
       const cached = trackMetadataCache.get(activeSerial);
 
-      // Preserve duration if current DURATION metadata is temporarily missing or <= 0
-      if (durationMs <= 0 && cached?.durationMs && cached.durationMs > 0) {
+      // Preserve duration ONLY if cached metadata is for the SAME track
+      if (durationMs <= 0 && cached?.trackIdentifier === trackIdentifier && cached?.durationMs && cached.durationMs > 0) {
         durationMs = cached.durationMs;
       }
 
-      // Preserve artwork if currently cached for this track or session
-      let artworkUrl = (cached?.trackIdentifier === trackIdentifier || isPlaying) ? cached?.artworkUrl : undefined;
+      // Preserve artwork ONLY if cached metadata is for the SAME track
+      let artworkUrl = (cached?.trackIdentifier === trackIdentifier) ? cached?.artworkUrl : undefined;
 
       if (!artworkUrl && selectedSession.artworkUri) {
         const rawUri = selectedSession.artworkUri;
@@ -861,71 +861,191 @@ export class DeviceControlService {
         }
       }
 
-      // If duration or artwork is missing, search MediaStore by title / artist / album keywords
-      if ((durationMs <= 0 || !artworkUrl) && (title || artist || album)) {
-        try {
-          const keywords = [title, artist, album]
-            .filter(Boolean)
-            .join(' ')
-            .toLowerCase()
-            .split(/[^a-z0-9]+/)
-            .filter((k) => k.length > 2);
+async function fetchOnlineMetadata(title: string, artist?: string, playerPackage: string = ''): Promise<{ durationMs: number; artworkUrl: string } | null> {
+  return new Promise((resolve) => {
+    const cleanTitle = (title || '').trim();
+    const cleanArtist = (artist || '').trim();
+    const pkg = (playerPackage || '').toLowerCase();
+    const isVideo = pkg.includes('youtube') && !pkg.includes('music');
 
-          if (keywords.length > 0) {
-            const { stdout: mediaOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'content', 'query', '--uri', 'content://media/external/audio/media', '--projection', '_id:album_id:duration:title:artist:album']);
-            const lines = mediaOut.split('\n');
+    if (!cleanTitle) {
+      resolve(null);
+      return;
+    }
 
-            const matchingRows: { line: string; score: number }[] = [];
-
-            for (const line of lines) {
-              if (!line.includes('Row:')) continue;
-              const lowerLine = line.toLowerCase();
-              let score = 0;
-              for (const kw of keywords) {
-                if (lowerLine.includes(kw)) score++;
-              }
-              if (score > 0) {
-                matchingRows.push({ line, score });
-              }
+    if (isVideo) {
+      const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanTitle + ' ' + cleanArtist)}`;
+      const req = https.get(url, { headers: { 'User-Agent': 'Mozilla/5.0' } }, (res) => {
+        let html = '';
+        res.on('data', (c) => (html += c));
+        res.on('end', () => {
+          const videoIdM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+          const durM = html.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);
+          let durationMs = 0;
+          if (durM && durM[1]) {
+            const parts = durM[1].split(':').map(Number);
+            if (parts.length === 2) durationMs = (parts[0] * 60 + parts[1]) * 1000;
+            else if (parts.length === 3) durationMs = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1000;
+          }
+          const artworkUrl = videoIdM ? `https://img.youtube.com/vi/${videoIdM[1]}/hqdefault.jpg` : '';
+          resolve({ durationMs, artworkUrl });
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.setTimeout(2500, () => {
+        req.destroy();
+        resolve(null);
+      });
+    } else {
+      const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
+      const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+      const req = https.get(url, (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            const json = JSON.parse(data);
+            if (json.results && json.results[0]) {
+              const item = json.results[0];
+              resolve({
+                durationMs: item.trackTimeMillis || 0,
+                artworkUrl: item.artworkUrl100 ? item.artworkUrl100.replace('100x100bb', '600x600bb') : '',
+              });
+            } else {
+              resolve(null);
             }
+          } catch {
+            resolve(null);
+          }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.setTimeout(2500, () => {
+        req.destroy();
+        resolve(null);
+      });
+    }
+  });
+}
 
-            matchingRows.sort((a, b) => b.score - a.score);
+      const isStreamingOrVideoApp =
+        playerPackage.toLowerCase().includes('youtube') ||
+        playerPackage.toLowerCase().includes('vanced') ||
+        playerPackage.toLowerCase().includes('morphe') ||
+        playerPackage.toLowerCase().includes('revanced') ||
+        playerPackage.toLowerCase().includes('netflix') ||
+        playerPackage.toLowerCase().includes('twitch') ||
+        playerPackage.toLowerCase().includes('chrome') ||
+        playerPackage.toLowerCase().includes('browser') ||
+        playerPackage.toLowerCase().includes('spotify') ||
+        playerPackage.toLowerCase().includes('soundcloud') ||
+        playerPackage.toLowerCase().includes('saavn') ||
+        playerPackage.toLowerCase().includes('gaana') ||
+        playerPackage.toLowerCase().includes('wynk');
 
-            for (const { line } of matchingRows) {
-              if (durationMs <= 0) {
-                const durM = line.match(/duration=(\d+)/i);
-                if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
-                  durationMs = parseInt(durM[1], 10);
+      // For streaming/video apps, ignore stale base64 data URLs from previous local searches
+      if (isStreamingOrVideoApp && artworkUrl && artworkUrl.startsWith('data:image')) {
+        artworkUrl = undefined;
+      }
+
+      // If duration or artwork is missing, attempt resolution via online APIs or local MediaStore
+      if (title) {
+        if (isStreamingOrVideoApp) {
+          const online = await fetchOnlineMetadata(title, artist, playerPackage);
+          if (online) {
+            if (online.durationMs > 0) durationMs = online.durationMs;
+            if (online.artworkUrl) artworkUrl = online.artworkUrl;
+          }
+        } else if (durationMs <= 0 || !artworkUrl) {
+          try {
+            const titleKeywords = (title || '')
+              .toLowerCase()
+              .split(/[^a-z0-9]+/)
+              .filter((k) => k.length >= 2);
+
+            const otherKeywords = [artist, album]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+              .split(/[^a-z0-9]+/)
+              .filter((k) => k.length > 2);
+
+            if (titleKeywords.length > 0 || otherKeywords.length > 0) {
+              const { stdout: mediaOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'content', 'query', '--uri', 'content://media/external/audio/media', '--projection', '_id:album_id:duration:title:artist:album']);
+              const lines = mediaOut.split('\n');
+
+              const matchingRows: { line: string; score: number }[] = [];
+
+              for (const line of lines) {
+                if (!line.includes('Row:')) continue;
+                const lowerLine = line.toLowerCase();
+
+                let titleScore = 0;
+                for (const kw of titleKeywords) {
+                  if (lowerLine.includes(kw)) titleScore += 10;
+                }
+
+                let otherScore = 0;
+                for (const kw of otherKeywords) {
+                  if (lowerLine.includes(kw)) otherScore += 1;
+                }
+
+                if (titleKeywords.length > 0 && titleScore === 0) {
+                  continue;
+                }
+
+                const totalScore = titleScore + otherScore;
+                if (totalScore > 0) {
+                  matchingRows.push({ line, score: totalScore });
                 }
               }
 
-              if (!artworkUrl) {
-                const albM = line.match(/album_id=(\d+)/i);
-                const idM = line.match(/_id=(\d+)/i);
+              matchingRows.sort((a, b) => b.score - a.score);
 
-                let artTargetUri = '';
-                if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
-                else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
-
-                if (artTargetUri) {
-                  try {
-                    const { stdout: shellB64 } = await adbService.execAdb(['-s', activeSerial, 'shell', `content read --uri "${artTargetUri}" | base64`]);
-                    const cleanB64 = shellB64.replace(/\s+/g, '');
-                    if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
-                      artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
-                      break;
-                    }
-                  } catch {
-                    // Try next matching row
+              for (const { line } of matchingRows) {
+                if (durationMs <= 0) {
+                  const durM = line.match(/duration=(\d+)/i);
+                  if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
+                    durationMs = parseInt(durM[1], 10);
                   }
                 }
-              } else if (durationMs > 0) {
-                break;
+
+                if (!artworkUrl) {
+                  const albM = line.match(/album_id=(\d+)/i);
+                  const idM = line.match(/_id=(\d+)/i);
+
+                  let artTargetUri = '';
+                  if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
+                  else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
+
+                  if (artTargetUri) {
+                    try {
+                      const { stdout: shellB64 } = await adbService.execAdb(['-s', activeSerial, 'shell', `content read --uri "${artTargetUri}" | base64`]);
+                      const cleanB64 = shellB64.replace(/\s+/g, '');
+                      if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                        artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+                        break;
+                      }
+                    } catch {
+                      // Try next matching row
+                    }
+                  }
+                } else if (durationMs > 0) {
+                  break;
+                }
               }
             }
+          } catch {
+            // Ignore
           }
-        } catch {
-          // Ignore
+
+          if (durationMs <= 0 || !artworkUrl) {
+            const online = await fetchOnlineMetadata(title, artist, playerPackage);
+            if (online) {
+              if (durationMs <= 0 && online.durationMs > 0) durationMs = online.durationMs;
+              if (!artworkUrl && online.artworkUrl) artworkUrl = online.artworkUrl;
+            }
+          }
         }
       }
 

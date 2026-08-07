@@ -1,4 +1,7 @@
-export function formatTime(milliseconds?: number): string {
+export function formatTime(milliseconds?: number, isDuration: boolean = false): string {
+  if (isDuration && (!milliseconds || milliseconds <= 0)) {
+    return '--:--';
+  }
   const totalSeconds = Math.max(0, Math.floor((milliseconds ?? 0) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);

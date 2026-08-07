@@ -18,7 +18,7 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ position, duration, pr
       </div>
       <div className="flex justify-between font-mono text-xs text-white/70">
         <span>{formatTime(position)}</span>
-        <span>{formatTime(duration)}</span>
+        <span>{formatTime(duration, true)}</span>
       </div>
     </div>
   );

@@ -18,9 +18,12 @@ export function useMediaSession(serial: string) {
       const media = await ipcService.control.getMediaInfo(serial);
       if (media && (media.title || media.artist || media.album)) {
         setSession((prev) => {
-          const title = media.title || prev?.title || 'Unknown title';
-          const artist = media.artist || prev?.artist || 'Unknown artist';
-          const sameTrack = prev?.title === title;
+          const newTitle = media.title?.trim() || '';
+          const newArtist = media.artist?.trim() || '';
+          const sameTrack = Boolean(newTitle && prev?.title === newTitle);
+
+          const title = newTitle || (sameTrack ? prev?.title : '') || 'Unknown title';
+          const artist = newArtist || (sameTrack ? prev?.artist : '') || 'Unknown artist';
 
           const duration = media.durationMs && media.durationMs > 0
             ? media.durationMs
