@@ -1,0 +1,11 @@
+node_modules
+# Build outputs
+release/
+dist/
+dist-electron/
+out/
+*.AppImage
+*.deb
+*.tar.gz
+*.zip
+linux-unpacked/release/

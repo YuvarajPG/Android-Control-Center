@@ -1,0 +1,4 @@
+export const DEFAULT_BRIGHTNESS_RAW = 180;
+export const MAX_BRIGHTNESS_RAW = 255;
+export const MIN_BRIGHTNESS_RAW = 0;
+export const BRIGHTNESS_POLL_INTERVAL_MS = 10000;

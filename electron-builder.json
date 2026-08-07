@@ -1,0 +1,23 @@
+{
+  "appId": "com.androidcontrolcenter.app",
+  "productName": "Android Control Center",
+  "copyright": "Copyright © 2026 Android Control Center Contributors",
+  "directories": {
+    "output": "release/${version}"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*"
+  ],
+  "mac": {
+    "category": "public.app-category.developer-tools",
+    "target": ["dmg", "zip"]
+  },
+  "win": {
+    "target": ["nsis", "portable"]
+  },
+  "linux": {
+    "target": ["AppImage", "deb", "tar.gz"],
+    "category": "Development"
+  }
+}

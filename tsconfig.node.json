@@ -1,0 +1,29 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "lib": [
+      "ES2022"
+    ],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true,
+    "skipLibCheck": true,
+    "strict": true,
+    "paths": {
+      "@main/*": [
+        "./src/main/*"
+      ],
+      "@shared/*": [
+        "./src/shared/*"
+      ]
+    },
+    "types": [
+      "node"
+    ]
+  },
+  "include": [
+    "vite.config.ts",
+    "src/main/**/*"
+  ]
+}
