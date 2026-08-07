@@ -56,6 +56,13 @@ export function registerDeviceControlHandlers(): void {
 
   // Set Clipboard
   ipcMain.handle('control:set-clipboard', async (_event, payload: { serial: string; text: string }) => {
+    if (payload.text) {
+      try {
+        clipboard.writeText(payload.text);
+      } catch {
+        // ignore
+      }
+    }
     return deviceControlService.setClipboard(payload.serial, payload.text);
   });
 

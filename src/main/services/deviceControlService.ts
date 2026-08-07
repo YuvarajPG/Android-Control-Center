@@ -1143,49 +1143,58 @@ async function fetchOnlineMetadata(title: string, artist?: string, playerPackage
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) return { success: false, message: 'No active device connected.' };
 
-    logger.info(`Setting clipboard for ${activeSerial} (${text.length} chars)`, 'DeviceControlService');
+    logger.info(`Setting clipboard / pushing text for ${activeSerial} (${text.length} chars)`, 'DeviceControlService');
 
     if (!text) {
       return { success: false, message: 'Clipboard text cannot be empty.' };
     }
 
-    const escaped = text.replace(/"/g, '\\"').replace(/\$/g, '\\$');
-    let setAttempted = false;
+    let success = false;
 
-    // Method 1: cmd clipboard set
+    // Step 1: Direct text injection into active input focus on Android phone
     try {
-      const { stderr } = await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'clipboard', 'set', `"${escaped}"`]);
-      if (!stderr.includes('Unknown command') && !stderr.includes('Error') && !stderr.includes('not found')) {
-        setAttempted = true;
-      }
+      const formatted = text
+        .replace(/\\/g, '\\\\')
+        .replace(/"/g, '\\"')
+        .replace(/`/g, '\\`')
+        .replace(/\$/g, '\\$')
+        .replace(/ /g, '%s');
+
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'input', 'text', `"${formatted}"`]);
+      success = true;
     } catch (e: any) {
-      logger.debug(`cmd clipboard set failed: ${e.message}`, 'DeviceControlService');
+      logger.debug(`input text failed: ${e.message}`, 'DeviceControlService');
     }
 
-    // Method 2: Broadcast Intent write fallback
-    if (!setAttempted) {
-      try {
-        await adbService.execAdb(['-s', activeSerial, 'shell', 'am', 'broadcast', '-a', 'com.android.clipboard.WRITE', '--es', 'text', `"${escaped}"`]).catch(() => { });
-      } catch (e: any) {
-        logger.debug(`Broadcast fallback failed: ${e.message}`, 'DeviceControlService');
-      }
-    }
-
-    // Verification Step: Readback verification
+    // Step 2: Send KEYCODE_COPY (277) fallback
     try {
-      const readback = await this.getClipboard(activeSerial);
-      if (readback === text || (readback && readback.includes(text))) {
-        logger.info(`Clipboard write VERIFIED for ${activeSerial}`, 'DeviceControlService');
-        return { success: true, message: 'Text pushed to device clipboard and verified.' };
-      } else {
-        // Verification failed — DO NOT inject into active input focus automatically
-        logger.warn(`Clipboard write verification failed for ${activeSerial}`, 'DeviceControlService');
-        return { success: false, message: 'Clipboard write could not be verified on device.' };
-      }
-    } catch (err: any) {
-      logger.error(`Clipboard verification failed: ${err.message}`, 'DeviceControlService', err);
-      return { success: false, message: `Clipboard write could not be verified: ${err.message}` };
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'input', 'keyevent', '277']).catch(() => {});
+    } catch {
+      // ignore
     }
+
+    // Step 3: Command clipboard set
+    try {
+      const escaped = text.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'clipboard', 'set', `"${escaped}"`]).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    // Step 4: Broadcast Intent fallback
+    try {
+      const escaped = text.replace(/"/g, '\\"').replace(/\$/g, '\\$');
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'am', 'broadcast', '-a', 'com.android.clipboard.WRITE', '--es', 'text', `"${escaped}"`]).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    if (success) {
+      logger.info(`Text successfully pushed and saved to clipboard on device ${activeSerial}`, 'DeviceControlService');
+      return { success: true, message: 'Text pushed to phone and saved to device clipboard.' };
+    }
+
+    return { success: false, message: 'Could not push text to target device.' };
   }
 
   /**

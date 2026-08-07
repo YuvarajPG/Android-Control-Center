@@ -87,6 +87,8 @@ export const DeviceControlFeature: React.FC = () => {
   );
 
   // Fetch device capabilities
+  const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
+
   const loadCapabilities = useCallback(async () => {
     const serial = getSerial();
     if (!serial) return;
@@ -97,14 +99,16 @@ export const DeviceControlFeature: React.FC = () => {
       setFlashlightOn(caps.flashlightActive);
 
       const clip = await ipcService.control.getClipboard(serial);
-      setClipboardText(clip);
-      if (clip) setLastClipboardUpdate(new Date());
+      if (clip && clip.trim() && !isInputFocused) {
+        setClipboardText(clip);
+        setLastClipboardUpdate(new Date());
+      }
     } catch (err: any) {
       addToast('error', `Failed reading capabilities: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
-  }, [addToast, getSerial]);
+  }, [addToast, getSerial, isInputFocused]);
 
   useEffect(() => {
     loadCapabilities();
@@ -167,8 +171,11 @@ export const DeviceControlFeature: React.FC = () => {
     const serial = getSerial();
     const res = await ipcService.control.setClipboard(serial, clipboardText);
     if (res.success) {
+      setClipboardText('');
       setLastClipboardUpdate(new Date());
-      addToast('success', 'Text pushed to device clipboard.');
+      addToast('success', res.message || 'Text pushed to device successfully.');
+    } else {
+      addToast('warning', res.message || 'Failed to push text to device.');
     }
   };
 
@@ -208,18 +215,71 @@ export const DeviceControlFeature: React.FC = () => {
     else addToast('warning', res.message);
   };
 
-  // Reboot Device
-  const handleReboot = async (mode: 'system' | 'recovery' | 'bootloader') => {
-    const serial = getSerial();
-    const res = await ipcService.control.reboot(serial, mode);
-    if (res.success) addToast('warning', res.message);
+  // Power Action Confirmation Dialog State
+  type PowerActionType = 'reboot_system' | 'reboot_recovery' | 'reboot_bootloader' | 'power_off' | null;
+  const [confirmAction, setConfirmAction] = useState<PowerActionType>(null);
+  const [isExecutingPowerAction, setIsExecutingPowerAction] = useState<boolean>(false);
+
+  const getPowerDialogConfig = (action: PowerActionType) => {
+    switch (action) {
+      case 'reboot_system':
+        return {
+          title: 'Reboot Device?',
+          description: 'The connected Android device will restart immediately. Any unsaved work on the device may be lost.',
+          confirmLabel: 'Reboot',
+          isDestructive: false,
+        };
+      case 'reboot_recovery':
+        return {
+          title: 'Boot into Recovery?',
+          description: 'The device will restart into Recovery mode. Continue?',
+          confirmLabel: 'Recovery',
+          isDestructive: false,
+        };
+      case 'reboot_bootloader':
+        return {
+          title: 'Enter Fastboot?',
+          description: 'The device will reboot into Fastboot (Bootloader) mode. You must manually reboot the device to return to Android.',
+          confirmLabel: 'Enter Fastboot',
+          isDestructive: false,
+        };
+      case 'power_off':
+        return {
+          title: 'Power Off Device?',
+          description: 'The connected Android device will power off immediately.',
+          confirmLabel: 'Power Off',
+          isDestructive: true,
+        };
+      default:
+        return null;
+    }
   };
 
-  // Power Off
-  const handlePowerOff = async () => {
+  const handleConfirmPowerAction = async () => {
+    if (!confirmAction || isExecutingPowerAction) return;
     const serial = getSerial();
-    const res = await ipcService.control.powerOff(serial);
-    if (res.success) addToast('warning', res.message);
+    setIsExecutingPowerAction(true);
+
+    try {
+      if (confirmAction === 'reboot_system') {
+        const res = await ipcService.control.reboot(serial, 'system');
+        if (res.success) addToast('warning', res.message);
+      } else if (confirmAction === 'reboot_recovery') {
+        const res = await ipcService.control.reboot(serial, 'recovery');
+        if (res.success) addToast('warning', res.message);
+      } else if (confirmAction === 'reboot_bootloader') {
+        const res = await ipcService.control.reboot(serial, 'bootloader');
+        if (res.success) addToast('warning', res.message);
+      } else if (confirmAction === 'power_off') {
+        const res = await ipcService.control.powerOff(serial);
+        if (res.success) addToast('warning', res.message);
+      }
+    } catch (err: any) {
+      addToast('error', `Action failed: ${err.message}`);
+    } finally {
+      setIsExecutingPowerAction(false);
+      setConfirmAction(null);
+    }
   };
 
   const serial = getSerial();
@@ -430,6 +490,8 @@ export const DeviceControlFeature: React.FC = () => {
                   label="Clipboard Text"
                   value={clipboardText}
                   onChange={(e) => setClipboardText(e.target.value)}
+                  onFocus={() => setIsInputFocused(true)}
+                  onBlur={() => setIsInputFocused(false)}
                   placeholder="Type or paste text to push to Android target device..."
                 />
                 {clipboardText && (
@@ -530,7 +592,7 @@ export const DeviceControlFeature: React.FC = () => {
                   <Button
                     variant="tonal"
                     size="sm"
-                    onClick={() => handleReboot('system')}
+                    onClick={() => setConfirmAction('reboot_system')}
                     className="justify-center"
                   >
                     Reboot
@@ -538,7 +600,7 @@ export const DeviceControlFeature: React.FC = () => {
                   <Button
                     variant="outlined"
                     size="sm"
-                    onClick={() => handleReboot('recovery')}
+                    onClick={() => setConfirmAction('reboot_recovery')}
                     className="justify-center"
                   >
                     Recovery
@@ -546,7 +608,7 @@ export const DeviceControlFeature: React.FC = () => {
                   <Button
                     variant="outlined"
                     size="sm"
-                    onClick={() => handleReboot('bootloader')}
+                    onClick={() => setConfirmAction('reboot_bootloader')}
                     className="justify-center"
                   >
                     Bootloader
@@ -561,7 +623,7 @@ export const DeviceControlFeature: React.FC = () => {
                   size="sm"
                   className="w-full bg-m3-error text-m3-on-error hover:bg-m3-error/90 justify-center font-bold"
                   icon={<Power className="h-4 w-4" />}
-                  onClick={handlePowerOff}
+                  onClick={() => setConfirmAction('power_off')}
                 >
                   Power Off Device
                 </Button>
@@ -603,6 +665,54 @@ export const DeviceControlFeature: React.FC = () => {
           </div>
         </form>
       </Modal>
+
+      {/* Power Action Confirmation Modal */}
+      {(() => {
+        const dialogConfig = getPowerDialogConfig(confirmAction);
+        if (!dialogConfig) return null;
+
+        return (
+          <Modal
+            isOpen={!!confirmAction}
+            onClose={() => {
+              if (!isExecutingPowerAction) setConfirmAction(null);
+            }}
+            title={dialogConfig.title}
+            maxWidth="sm"
+          >
+            <div className="space-y-4">
+              <p className="text-sm text-m3-on-surface-variant leading-relaxed">
+                {dialogConfig.description}
+              </p>
+
+              <div className="flex items-center justify-end gap-3 pt-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setConfirmAction(null)}
+                  disabled={isExecutingPowerAction}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="filled"
+                  size="sm"
+                  onClick={handleConfirmPowerAction}
+                  isLoading={isExecutingPowerAction}
+                  disabled={isExecutingPowerAction}
+                  className={
+                    dialogConfig.isDestructive
+                      ? 'bg-m3-error text-m3-on-error hover:bg-m3-error/90 font-bold'
+                      : 'font-bold'
+                  }
+                >
+                  {dialogConfig.confirmLabel}
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 };
