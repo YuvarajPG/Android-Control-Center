@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ipcService } from '../../../services/ipcService';
 import { MediaControlAction, MediaSessionData, PlaybackState } from '../types';
 import { MEDIA_POLL_INTERVAL_MS } from '../constants';
@@ -6,6 +6,8 @@ import { MEDIA_POLL_INTERVAL_MS } from '../constants';
 export function useMediaSession(serial: string) {
   const [session, setSession] = useState<MediaSessionData | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+
+  const emptyPollCountRef = useRef<number>(0);
 
   const fetchSession = useCallback(async () => {
     if (!serial) {
@@ -17,6 +19,7 @@ export function useMediaSession(serial: string) {
       setIsLoading(true);
       const media = await ipcService.control.getMediaInfo(serial);
       if (media && (media.title || media.artist || media.album)) {
+        emptyPollCountRef.current = 0;
         setSession((prev) => {
           const newTitle = media.title?.trim() || '';
           const newArtist = media.artist?.trim() || '';
@@ -58,10 +61,16 @@ export function useMediaSession(serial: string) {
           };
         });
       } else {
-        setSession(null);
+        emptyPollCountRef.current += 1;
+        if (emptyPollCountRef.current >= 3) {
+          setSession(null);
+        }
       }
     } catch {
-      setSession(null);
+      emptyPollCountRef.current += 1;
+      if (emptyPollCountRef.current >= 3) {
+        setSession(null);
+      }
     } finally {
       setIsLoading(false);
     }

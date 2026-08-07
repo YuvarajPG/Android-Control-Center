@@ -1006,7 +1006,11 @@ async function fetchOnlineMetadata(title: string, artist?: string, playerPackage
                 if (durationMs <= 0) {
                   const durM = line.match(/duration=(\d+)/i);
                   if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
-                    durationMs = parseInt(durM[1], 10);
+                    let parsedDur = parseInt(durM[1], 10);
+                    if (parsedDur > 0 && parsedDur < 10000) {
+                      parsedDur *= 1000;
+                    }
+                    durationMs = parsedDur;
                   }
                 }
 

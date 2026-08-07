@@ -1,24 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { calculateProgress } from '../utils';
 
-export function useProgress(position: number, duration: number, playbackState: string, playbackSpeed: number = 1.0) {
+export function useProgress(
+  position: number,
+  duration: number,
+  playbackState: string,
+  playbackSpeed: number = 1.0,
+  trackId?: string
+) {
   const [displayPosition, setDisplayPosition] = useState(position);
   const lastPositionRef = useRef(position);
   const lastSyncTimeRef = useRef(performance.now());
+  const prevTrackIdRef = useRef(trackId);
 
   const isPlaying = playbackState === 'playing';
 
-  // Resync position anchor only if user seeked (>2.5s delta) or when stopped/paused
+  // Synchronize position anchor with Android whenever position, playbackState, or trackId changes
   useEffect(() => {
-    const currentEst = lastPositionRef.current + (performance.now() - lastSyncTimeRef.current) * playbackSpeed;
-    const delta = Math.abs(position - currentEst);
-
-    if (delta > 2500 || position === 0 || !isPlaying) {
-      lastPositionRef.current = Math.max(0, position);
-      lastSyncTimeRef.current = performance.now();
-      setDisplayPosition(lastPositionRef.current);
-    }
-  }, [position, duration, playbackState, isPlaying, playbackSpeed]);
+    prevTrackIdRef.current = trackId;
+    lastPositionRef.current = Math.max(0, position);
+    lastSyncTimeRef.current = performance.now();
+    setDisplayPosition(lastPositionRef.current);
+  }, [position, playbackState, trackId]);
 
   // Animate locally using requestAnimationFrame
   useEffect(() => {

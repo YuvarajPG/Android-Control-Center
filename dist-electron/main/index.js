@@ -3162,10 +3162,10 @@ const _DeviceControlService = class _DeviceControlService {
       }
       const trackIdentifier = `${playerPackage}/${title}/${artist}`;
       const cached = trackMetadataCache.get(activeSerial);
-      if (durationMs <= 0 && (cached == null ? void 0 : cached.durationMs) && cached.durationMs > 0) {
+      if (durationMs <= 0 && (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier && (cached == null ? void 0 : cached.durationMs) && cached.durationMs > 0) {
         durationMs = cached.durationMs;
       }
-      let artworkUrl = (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier || isPlaying ? cached == null ? void 0 : cached.artworkUrl : void 0;
+      let artworkUrl = (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier ? cached == null ? void 0 : cached.artworkUrl : void 0;
       if (!artworkUrl && selectedSession.artworkUri) {
         const rawUri = selectedSession.artworkUri;
         if (rawUri.startsWith("http://") || rawUri.startsWith("https://")) {
@@ -3189,55 +3189,151 @@ const _DeviceControlService = class _DeviceControlService {
           }
         }
       }
-      if ((durationMs <= 0 || !artworkUrl) && (title || artist || album)) {
-        try {
-          const keywords = [title, artist, album].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length > 2);
-          if (keywords.length > 0) {
-            const { stdout: mediaOut } = await adbService.execAdb(["-s", activeSerial, "shell", "content", "query", "--uri", "content://media/external/audio/media", "--projection", "_id:album_id:duration:title:artist:album"]);
-            const lines = mediaOut.split("\n");
-            const matchingRows = [];
-            for (const line of lines) {
-              if (!line.includes("Row:")) continue;
-              const lowerLine = line.toLowerCase();
-              let score = 0;
-              for (const kw of keywords) {
-                if (lowerLine.includes(kw)) score++;
-              }
-              if (score > 0) {
-                matchingRows.push({ line, score });
-              }
-            }
-            matchingRows.sort((a, b) => b.score - a.score);
-            for (const { line } of matchingRows) {
-              if (durationMs <= 0) {
-                const durM = line.match(/duration=(\d+)/i);
-                if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
-                  durationMs = parseInt(durM[1], 10);
+      async function fetchOnlineMetadata(title2, artist2, playerPackage2 = "") {
+        return new Promise((resolve) => {
+          const cleanTitle = (title2 || "").trim();
+          const cleanArtist = (artist2 || "").trim();
+          const pkg = (playerPackage2 || "").toLowerCase();
+          const isVideo = pkg.includes("youtube") && !pkg.includes("music");
+          if (!cleanTitle) {
+            resolve(null);
+            return;
+          }
+          if (isVideo) {
+            const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanTitle + " " + cleanArtist)}`;
+            const req = https.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+              let html = "";
+              res.on("data", (c) => html += c);
+              res.on("end", () => {
+                const videoIdM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+                const durM = html.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);
+                let durationMs2 = 0;
+                if (durM && durM[1]) {
+                  const parts = durM[1].split(":").map(Number);
+                  if (parts.length === 2) durationMs2 = (parts[0] * 60 + parts[1]) * 1e3;
+                  else if (parts.length === 3) durationMs2 = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1e3;
+                }
+                const artworkUrl2 = videoIdM ? `https://img.youtube.com/vi/${videoIdM[1]}/hqdefault.jpg` : "";
+                resolve({ durationMs: durationMs2, artworkUrl: artworkUrl2 });
+              });
+            });
+            req.on("error", () => resolve(null));
+            req.setTimeout(2500, () => {
+              req.destroy();
+              resolve(null);
+            });
+          } else {
+            const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
+            const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+            const req = https.get(url, (res) => {
+              let data = "";
+              res.on("data", (c) => data += c);
+              res.on("end", () => {
+                try {
+                  const json = JSON.parse(data);
+                  if (json.results && json.results[0]) {
+                    const item = json.results[0];
+                    resolve({
+                      durationMs: item.trackTimeMillis || 0,
+                      artworkUrl: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : ""
+                    });
+                  } else {
+                    resolve(null);
+                  }
+                } catch {
+                  resolve(null);
+                }
+              });
+            });
+            req.on("error", () => resolve(null));
+            req.setTimeout(2500, () => {
+              req.destroy();
+              resolve(null);
+            });
+          }
+        });
+      }
+      const isStreamingOrVideoApp = playerPackage.toLowerCase().includes("youtube") || playerPackage.toLowerCase().includes("vanced") || playerPackage.toLowerCase().includes("morphe") || playerPackage.toLowerCase().includes("revanced") || playerPackage.toLowerCase().includes("netflix") || playerPackage.toLowerCase().includes("twitch") || playerPackage.toLowerCase().includes("chrome") || playerPackage.toLowerCase().includes("browser") || playerPackage.toLowerCase().includes("spotify") || playerPackage.toLowerCase().includes("soundcloud") || playerPackage.toLowerCase().includes("saavn") || playerPackage.toLowerCase().includes("gaana") || playerPackage.toLowerCase().includes("wynk");
+      if (isStreamingOrVideoApp && artworkUrl && artworkUrl.startsWith("data:image")) {
+        artworkUrl = void 0;
+      }
+      if (title) {
+        if (isStreamingOrVideoApp) {
+          const online = await fetchOnlineMetadata(title, artist, playerPackage);
+          if (online) {
+            if (online.durationMs > 0) durationMs = online.durationMs;
+            if (online.artworkUrl) artworkUrl = online.artworkUrl;
+          }
+        } else if (durationMs <= 0 || !artworkUrl) {
+          try {
+            const titleKeywords = (title || "").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length >= 2);
+            const otherKeywords = [artist, album].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length > 2);
+            if (titleKeywords.length > 0 || otherKeywords.length > 0) {
+              const { stdout: mediaOut } = await adbService.execAdb(["-s", activeSerial, "shell", "content", "query", "--uri", "content://media/external/audio/media", "--projection", "_id:album_id:duration:title:artist:album"]);
+              const lines = mediaOut.split("\n");
+              const matchingRows = [];
+              for (const line of lines) {
+                if (!line.includes("Row:")) continue;
+                const lowerLine = line.toLowerCase();
+                let titleScore = 0;
+                for (const kw of titleKeywords) {
+                  if (lowerLine.includes(kw)) titleScore += 10;
+                }
+                let otherScore = 0;
+                for (const kw of otherKeywords) {
+                  if (lowerLine.includes(kw)) otherScore += 1;
+                }
+                if (titleKeywords.length > 0 && titleScore === 0) {
+                  continue;
+                }
+                const totalScore = titleScore + otherScore;
+                if (totalScore > 0) {
+                  matchingRows.push({ line, score: totalScore });
                 }
               }
-              if (!artworkUrl) {
-                const albM = line.match(/album_id=(\d+)/i);
-                const idM = line.match(/_id=(\d+)/i);
-                let artTargetUri = "";
-                if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
-                else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
-                if (artTargetUri) {
-                  try {
-                    const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${artTargetUri}" | base64`]);
-                    const cleanB64 = shellB64.replace(/\s+/g, "");
-                    if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
-                      artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
-                      break;
+              matchingRows.sort((a, b) => b.score - a.score);
+              for (const { line } of matchingRows) {
+                if (durationMs <= 0) {
+                  const durM = line.match(/duration=(\d+)/i);
+                  if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
+                    let parsedDur = parseInt(durM[1], 10);
+                    if (parsedDur > 0 && parsedDur < 1e4) {
+                      parsedDur *= 1e3;
                     }
-                  } catch {
+                    durationMs = parsedDur;
                   }
                 }
-              } else if (durationMs > 0) {
-                break;
+                if (!artworkUrl) {
+                  const albM = line.match(/album_id=(\d+)/i);
+                  const idM = line.match(/_id=(\d+)/i);
+                  let artTargetUri = "";
+                  if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
+                  else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
+                  if (artTargetUri) {
+                    try {
+                      const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${artTargetUri}" | base64`]);
+                      const cleanB64 = shellB64.replace(/\s+/g, "");
+                      if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                        artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+                        break;
+                      }
+                    } catch {
+                    }
+                  }
+                } else if (durationMs > 0) {
+                  break;
+                }
               }
             }
+          } catch {
           }
-        } catch {
+          if (durationMs <= 0 || !artworkUrl) {
+            const online = await fetchOnlineMetadata(title, artist, playerPackage);
+            if (online) {
+              if (durationMs <= 0 && online.durationMs > 0) durationMs = online.durationMs;
+              if (!artworkUrl && online.artworkUrl) artworkUrl = online.artworkUrl;
+            }
+          }
         }
       }
       if (!artworkUrl && (cached == null ? void 0 : cached.artworkUrl) && playbackState !== "stopped") {

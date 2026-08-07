@@ -26,7 +26,7 @@ export const MediaPlayer: React.FC<MediaPlayerProps> = ({ serial }) => {
 
   const trackIdentifier = `${title}/${artist}`;
   const { artworkUrl, handleArtworkError } = useArtwork(rawArtwork, trackIdentifier);
-  const { displayPosition, progressPercent } = useProgress(position, duration, playbackState, session?.playbackSpeed);
+  const { displayPosition, progressPercent } = useProgress(position, duration, playbackState, session?.playbackSpeed, trackIdentifier);
 
   const isPlaying = playbackState === 'playing';
   const isBuffering = playbackState === 'buffering';
