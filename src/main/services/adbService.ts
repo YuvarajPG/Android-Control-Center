@@ -680,9 +680,30 @@ export class ADBService {
    */
   public async disconnect(target?: string): Promise<AdbCommandResult> {
     try {
-      const args = target ? ['disconnect', target] : ['disconnect'];
-      const { stdout } = await this.execAdb(args);
-      const cleanStdout = stdout.trim();
+      if (target) {
+        this.staticInfoCache.delete(target);
+      } else {
+        this.staticInfoCache.clear();
+      }
+      this.cachedRawDevicesTimestamp = 0;
+      this.cachedRawDevicesList = [];
+
+      let cleanStdout = '';
+      const isUsb = target && !target.includes(':') && !target.includes('.');
+
+      if (isUsb) {
+        try {
+          const res = await this.execAdb(['reconnect', 'device', target]);
+          cleanStdout = res.stdout.trim() || 'USB transport reconnected';
+        } catch {
+          const res = await this.execAdb(['disconnect', target]).catch(() => ({ stdout: '' }));
+          cleanStdout = res.stdout ? res.stdout.trim() : `Disconnected ${target}`;
+        }
+      } else {
+        const args = target ? ['disconnect', target] : ['disconnect'];
+        const res = await this.execAdb(args);
+        cleanStdout = res.stdout.trim();
+      }
 
       logger.info(`adb disconnect ${target || 'all'} result: ${cleanStdout}`, 'ADBService');
 
@@ -745,18 +766,21 @@ export class ADBService {
       return { success: false, message: 'IP, Port, and Pairing Code are all required.' };
     }
 
+    const cleanCode = pairingCode.trim();
+    if (!/^\d{6}$/.test(cleanCode)) {
+      return { success: false, message: 'Pairing code must be a 6-digit numeric code.' };
+    }
+
     const adbPath = await this.getAdbExecutablePath();
     if (!adbPath) {
       return { success: false, message: 'ADB executable not found.' };
     }
 
-    const target = `${ip}:${port}`;
-    logger.info(`Starting adb pair ${target} with code ${pairingCode}`, 'ADBService');
+    const target = `${ip.trim()}:${port}`;
+    logger.info(`Starting adb pair ${target} (pairing code length: ${cleanCode.length} digits)`, 'ADBService');
 
     return new Promise((resolve) => {
-      // Spawn child process since adb pair expects code input via stdin or positional argument depending on platform/ADB version.
-      // Modern ADB supports: adb pair <ip>:<port> [code]
-      const child = spawn(adbPath, ['pair', target, pairingCode], { timeout: 15000 });
+      const child = spawn(adbPath, ['pair', target, cleanCode], { timeout: 15000 });
       let output = '';
       let errorOutput = '';
 
@@ -773,19 +797,16 @@ export class ADBService {
         const stderrStr = errorOutput.trim();
 
         logger.info(`adb pair exit code: ${code}`, 'ADBService');
-        logger.info(`adb pair stdout: ${stdoutStr || '(none)'}`, 'ADBService');
-        logger.info(`adb pair stderr: ${stderrStr || '(none)'}`, 'ADBService');
 
         const fullOutput = (stdoutStr + '\n' + stderrStr).trim();
         const lowerOutput = fullOutput.toLowerCase();
 
-        // Strict validation: stdout/fullOutput MUST contain positive pairing confirmation
         const isSuccess = code === 0 && (lowerOutput.includes('successfully paired') || lowerOutput.includes('paired to'));
 
         if (!isSuccess) {
-          logger.error(`adb pair failed: ${fullOutput || `Exited with code ${code}`}`, 'ADBService');
+          logger.error(`adb pair failed for ${target}: ${fullOutput || `Exited with code ${code}`}`, 'ADBService');
         } else {
-          logger.info(`adb pair successful: ${fullOutput}`, 'ADBService');
+          logger.info(`adb pair successful for ${target}: ${stdoutStr}`, 'ADBService');
         }
 
         resolve({
@@ -794,12 +815,9 @@ export class ADBService {
         });
       });
 
-      // Write pairing code to stdin just in case the version of ADB prompts for it
       try {
-        child.stdin?.write(`${pairingCode}\n`);
-      } catch {
-        // ignore write error
-      }
+        child.stdin?.write(`${cleanCode}\n`);
+      } catch {}
     });
   }
 
@@ -886,6 +904,50 @@ export class ADBService {
         success: false,
         message: `Failed to query mDNS services: ${err.message}`,
       };
+    }
+  }
+
+  /**
+   * System mDNS / Avahi service discovery fallback for Android Wireless Debugging
+   */
+  public async discoverSystemMdnsServices(): Promise<{ success: boolean; services: Array<{ ip: string; port: number; name: string; type: string }> }> {
+    const services: Array<{ ip: string; port: number; name: string; type: string }> = [];
+    try {
+      // 1. Try _adb-tls-connect._tcp (Android 11+ Wireless Debugging TLS port)
+      const resTls = await execFileAsync('avahi-browse', ['-r', '-t', '-p', '_adb-tls-connect._tcp'], { timeout: 3000 }).catch(() => ({ stdout: '' }));
+      for (const line of resTls.stdout.split(/\r?\n/)) {
+        if (line.startsWith('=')) {
+          const parts = line.split(';');
+          if (parts.length >= 9) {
+            const ip = parts[7];
+            const port = parseInt(parts[8], 10);
+            const name = parts[3];
+            if (ip && port > 1024 && port <= 65535 && !services.some((s) => s.ip === ip && s.port === port)) {
+              services.push({ ip, port, name, type: '_adb-tls-connect._tcp' });
+            }
+          }
+        }
+      }
+
+      // 2. Try _adb._tcp
+      const resAdb = await execFileAsync('avahi-browse', ['-r', '-t', '-p', '_adb._tcp'], { timeout: 3000 }).catch(() => ({ stdout: '' }));
+      for (const line of resAdb.stdout.split(/\r?\n/)) {
+        if (line.startsWith('=')) {
+          const parts = line.split(';');
+          if (parts.length >= 9) {
+            const ip = parts[7];
+            const port = parseInt(parts[8], 10);
+            const name = parts[3];
+            if (ip && port > 1024 && port <= 65535 && !services.some((s) => s.ip === ip)) {
+              services.push({ ip, port, name, type: '_adb._tcp' });
+            }
+          }
+        }
+      }
+
+      return { success: services.length > 0, services };
+    } catch {
+      return { success: false, services: [] };
     }
   }
 

@@ -13,6 +13,7 @@ import { useDeviceStore } from '../../store/useDeviceStore';
 import { useAppStore } from '../../store/useAppStore';
 import { Button } from '../common/Button';
 import { Badge } from '../common/Badge';
+import { Tooltip } from '../common/Tooltip';
 import { SetupWizardModal } from '../../features/setup/SetupWizardModal';
 
 
@@ -36,15 +37,16 @@ export const Header: React.FC = () => {
         <div className="flex shrink-0 items-center gap-2">
 
 
-          <Button
-            variant="outlined"
-            size="sm"
-            icon={<Wand2 className="h-4 w-4 text-m3-primary" />}
-            onClick={() => setIsWizardOpen(true)}
-            title="Launch Setup Wizard"
-          >
-            <span className="hidden 2xl:inline">Setup Wizard</span>
-          </Button>
+          <Tooltip content="Launch Setup Wizard" position="bottom">
+            <Button
+              variant="outlined"
+              size="sm"
+              icon={<Wand2 className="h-4 w-4 text-m3-primary" />}
+              onClick={() => setIsWizardOpen(true)}
+            >
+              <span className="hidden 2xl:inline">Setup Wizard</span>
+            </Button>
+          </Tooltip>
 
           {selectedDevice ? (
             <div className="hidden 2xl:flex items-center gap-3 bg-m3-surface-2 border border-m3-surface-4 rounded-m3-md px-3.5 py-1.5 shadow-inner">
@@ -99,14 +101,15 @@ export const Header: React.FC = () => {
           )}
 
           {/* Quick Refresh ADB Bus Button */}
-          <Button
-            variant="ghost"
-            size="sm"
-            icon={<RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin text-m3-primary' : ''}`} />}
-            onClick={handleRefresh}
-            isLoading={isLoading}
-            title="Rescan ADB Bus"
-          />
+          <Tooltip content="Rescan ADB Bus" position="bottom">
+            <Button
+              variant="ghost"
+              size="sm"
+              icon={<RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin text-m3-primary' : ''}`} />}
+              onClick={handleRefresh}
+              isLoading={isLoading}
+            />
+          </Tooltip>
         </div>
       </header>
 

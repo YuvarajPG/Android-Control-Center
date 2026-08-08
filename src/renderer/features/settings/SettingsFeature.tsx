@@ -155,10 +155,10 @@ export const SettingsFeature: React.FC = () => {
                 size="sm"
                 onClick={() => {
                   updateSettings({ hasCompletedFirstRun: false });
-                  addToast('info', 'First-run setup wizard reset. Re-open wizard to run setup.');
+                  addToast('info', 'Setup wizard reset. Opening setup wizard...');
                 }}
               >
-                Re-run Setup
+                Run Setup Wizard Again
               </Button>
             </div>
           </div>
@@ -241,6 +241,17 @@ export const SettingsFeature: React.FC = () => {
               ]}
               value={String(settings.screenMirrorBitrate ?? 16)}
               onChange={(e) => updateSettings({ screenMirrorBitrate: Number(e.target.value) })}
+            />
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-m3-surface-2 rounded-m3-md border border-m3-surface-4 mt-4">
+            <div>
+              <h4 className="text-sm font-semibold text-m3-on-surface">Automatically Start Screen Mirroring</h4>
+              <p className="text-xs text-m3-on-surface-variant">Automatically launch scrcpy video streaming when a device connects. Default is OFF.</p>
+            </div>
+            <Switch
+              checked={settings.autoStartMirrorOnConnect || false}
+              onChange={(checked) => updateSettings({ autoStartMirrorOnConnect: checked })}
             />
           </div>
         </Card>

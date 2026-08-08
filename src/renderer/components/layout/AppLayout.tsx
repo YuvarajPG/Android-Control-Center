@@ -19,12 +19,19 @@ export const AppLayout: React.FC = () => {
 
   const [isFirstRunWizardOpen, setIsFirstRunWizardOpen] = useState<boolean>(false);
 
+  const { devices } = useDeviceStore();
+  const [trustedCount, setTrustedCount] = useState<number | null>(null);
+
   // Mount global keyboard navigation shortcuts (Ctrl+1..8, Ctrl+R)
   useKeyboardShortcuts();
 
   useEffect(() => {
     loadSettings();
     initDiscovery();
+
+    ipcService.invoke<any[]>('device:list-trusted')
+      .then((list) => setTrustedCount(Array.isArray(list) ? list.length : 0))
+      .catch(() => setTrustedCount(0));
 
     // Listen to native backend desktop notifications pushed into toast overlay
     const unsubscribe = ipcService.on('app:toast-notification', (payload: unknown) => {
@@ -38,12 +45,27 @@ export const AppLayout: React.FC = () => {
     return () => unsubscribe();
   }, [loadSettings, initDiscovery, addToast]);
 
-  // Trigger setup wizard on first run automatically (optional – user can skip/close it themselves)
+  // First-Run Wizard condition:
+  // Show ONLY IF hasCompletedFirstRun is false AND no trusted devices AND no connected Android devices
   useEffect(() => {
-    if (!settings.hasCompletedFirstRun) {
-      setIsFirstRunWizardOpen(true);
+    console.log(`[SetupWizard Audit] Startup onboardingCompleted=${settings.hasCompletedFirstRun}`);
+
+    if (settings.hasCompletedFirstRun) {
+      setIsFirstRunWizardOpen(false);
+      return;
     }
-  }, [settings.hasCompletedFirstRun]);
+
+    if (trustedCount === null) return;
+
+    const hasOnlineDevice = devices.some((d) => d.status === 'online');
+    const hasTrustedDevices = trustedCount > 0;
+
+    if (!hasOnlineDevice && !hasTrustedDevices && !settings.hasCompletedFirstRun) {
+      setIsFirstRunWizardOpen(true);
+    } else {
+      setIsFirstRunWizardOpen(false);
+    }
+  }, [settings.hasCompletedFirstRun, trustedCount, devices]);
 
   return (
     <ErrorBoundary>

@@ -1,8 +1,5 @@
 export function normalizeTimeMs(val?: number): number {
-  if (!val || val <= 0) return 0;
-  if (val > 0 && val < 10000) {
-    return Math.round(val * 1000);
-  }
+  if (!val || val <= 0 || !Number.isFinite(val)) return 0;
   return Math.round(val);
 }
 
@@ -31,4 +28,23 @@ export function calculateProgress(position: number, duration: number): number {
 
   const percent = (normPos / normDur) * 100;
   return Math.min(100, Math.max(0, Number.isFinite(percent) ? percent : 0));
+}
+
+export function formatAppPackageName(pkg?: string): string {
+  if (!pkg || pkg === 'unknown') return 'Media Player';
+  const clean = pkg.trim().toLowerCase();
+  if (clean.includes('youtube')) return 'YouTube';
+  if (clean.includes('spotify')) return 'Spotify';
+  if (clean.includes('chrome')) return 'Google Chrome';
+  if (clean.includes('vlc')) return 'VLC';
+  if (clean.includes('netflix')) return 'Netflix';
+  if (clean.includes('amazon.mp3') || clean.includes('music')) return 'Music Player';
+  if (clean.includes('files')) return 'Files';
+  if (clean.includes('audible')) return 'Audible';
+  if (clean.includes('podcast')) return 'Podcasts';
+  if (clean.includes('soundcloud')) return 'SoundCloud';
+
+  const parts = clean.split('.');
+  const lastPart = parts[parts.length - 1] || clean;
+  return lastPart.charAt(0).toUpperCase() + lastPart.slice(1);
 }

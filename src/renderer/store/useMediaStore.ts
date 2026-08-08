@@ -96,6 +96,9 @@ export const useMediaStore = create<MediaState>((set, get) => ({
             playbackState: state,
             packageName: media.playerPackage,
             playbackSpeed: (media as any).playbackSpeed || 1.0,
+            mediaType: media.mediaType,
+            sourceApp: media.sourceApp,
+            sourceBadge: media.sourceBadge,
           },
         });
       } else {

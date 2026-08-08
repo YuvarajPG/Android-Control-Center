@@ -62,6 +62,40 @@ export class DeviceDiscoveryService {
     return this.cachedDevices;
   }
 
+  private manualDisconnectSuppression: Set<string> = new Set();
+
+  public suppressDevice(target?: string, hardwareSerial?: string): void {
+    if (!target) return;
+    const cleanTarget = target.trim();
+    this.manualDisconnectSuppression.add(cleanTarget);
+    if (hardwareSerial) this.manualDisconnectSuppression.add(hardwareSerial.trim());
+    const ip = cleanTarget.includes(':') ? cleanTarget.split(':')[0] : cleanTarget;
+    if (ip) this.manualDisconnectSuppression.add(ip);
+    logger.info(`[DISCONNECT] Suppressed ${cleanTarget} from active polling and target hydration`, 'DeviceDiscoveryService');
+  }
+
+  public clearSuppression(target?: string, hardwareSerial?: string): void {
+    if (!target) {
+      this.manualDisconnectSuppression.clear();
+      return;
+    }
+    const cleanTarget = target.trim();
+    this.manualDisconnectSuppression.delete(cleanTarget);
+    if (hardwareSerial) this.manualDisconnectSuppression.delete(hardwareSerial.trim());
+    const ip = cleanTarget.includes(':') ? cleanTarget.split(':')[0] : cleanTarget;
+    if (ip) this.manualDisconnectSuppression.delete(ip);
+    logger.info(`[RECONNECT] Cleared suppression for ${cleanTarget}`, 'DeviceDiscoveryService');
+  }
+
+  public isSuppressed(target?: string, hardwareSerial?: string): boolean {
+    if (!target) return false;
+    const cleanTarget = target.trim();
+    if (this.manualDisconnectSuppression.has(cleanTarget)) return true;
+    if (hardwareSerial && this.manualDisconnectSuppression.has(hardwareSerial.trim())) return true;
+    const ip = cleanTarget.includes(':') ? cleanTarget.split(':')[0] : cleanTarget;
+    return Boolean(ip && this.manualDisconnectSuppression.has(ip));
+  }
+
   /**
    * Run ONE bounded event-driven discovery session with max 5 retries and exponential backoff.
    * Automatic execution skipped if enableAutoWirelessReconnect is false unless explicitly user-initiated.
@@ -111,10 +145,14 @@ export class DeviceDiscoveryService {
       // Attempt adb connect to latest single stored endpoint per physical device
       for (const dev of wirelessTrusted) {
         if (!dev.ipAddress) continue;
+        if (this.isSuppressed(dev.ipAddress) || this.isSuppressed(dev.serialNumber)) {
+          logger.info(`Skipping auto connect for ${dev.ipAddress} — device is manually suppressed after explicit user disconnect`, 'DeviceDiscoveryService');
+          continue;
+        }
         try {
           const connRes = await adbService.connectWireless(dev.ipAddress, dev.port || 5555);
           if (connRes.success) {
-            const reScanned = await this.scanDevices();
+            const reScanned = await this.scanDevices(true);
             if (reScanned.some((d) => d.status === 'online')) {
               this.isDiscoveryActive = false;
               if (onProgress) onProgress(attempt, this.maxAttempts, 'Connected');
@@ -258,8 +296,12 @@ export class DeviceDiscoveryService {
     this.isScanning = true;
 
     try {
-      const rawList = await adbService.listRawDevices();
+      const rawList = await adbService.listRawDevices(forceRefresh);
       this.adbFailCount = 0;
+
+      if (forceRefresh) {
+        this.lastRawSerialsKey = '';
+      }
 
       // If raw serials list is unchanged and not forceRefresh, return cached devices immediately
       if (!forceRefresh && !this.hasRawSerialsChanged(rawList) && this.cachedDevices.length > 0) {
@@ -277,11 +319,20 @@ export class DeviceDiscoveryService {
       for (const item of rawList) {
         currentActiveSerials.add(item.serial);
 
+        const isDisconnected = this.isSuppressed(item.serial);
+
         let status: DeviceInfoModel['status'] = 'unknown';
-        if (item.rawStatus === 'device') status = 'online';
-        else if (item.rawStatus === 'unauthorized') status = 'unauthorized';
-        else if (item.rawStatus === 'offline') status = 'offline';
-        else if (item.rawStatus === 'connecting') status = 'connecting';
+        if (isDisconnected) {
+          status = 'offline';
+        } else if (item.rawStatus === 'device') {
+          status = 'online';
+        } else if (item.rawStatus === 'unauthorized') {
+          status = 'unauthorized';
+        } else if (item.rawStatus === 'offline') {
+          status = 'offline';
+        } else if (item.rawStatus === 'connecting') {
+          status = 'connecting';
+        }
 
         const detailedSpecs = await adbService.fetchDetailedDeviceSpecs(item.serial, status, item.connectionType);
 
@@ -310,8 +361,7 @@ export class DeviceDiscoveryService {
       const groupedSpecsMap = new Map<string, DeviceInfoModel[]>();
 
       for (const dev of currentDevices) {
-        const groupKey =
-          dev.hardwareSerial || (dev.model && dev.model !== 'Generic Device' ? `${dev.manufacturer}_${dev.model}` : dev.serialNumber);
+        const groupKey = dev.hardwareSerial || dev.serialNumber;
 
         if (!groupedSpecsMap.has(groupKey)) {
           groupedSpecsMap.set(groupKey, []);
@@ -344,38 +394,36 @@ export class DeviceDiscoveryService {
           }
         }
 
-        // Include remembered offline wireless transport from trusted store if missing
+        // Include remembered offline wireless transport ONLY if it was explicitly a wireless device with a real port
         const trustedMatch = trustedList.find(
-          (t) => t.hardwareSerial === groupKey || t.id === primarySpec.id || (t.model === primarySpec.model && t.manufacturer === primarySpec.manufacturer),
+          (t) => t.hardwareSerial === groupKey || t.serialNumber === groupKey || t.id === primarySpec.id,
         );
-        if (trustedMatch && trustedMatch.ipAddress) {
+        if (trustedMatch && trustedMatch.connectionType === 'wireless' && trustedMatch.ipAddress && trustedMatch.port) {
           const hasWireless = transports.some((t) => t.type === 'wireless');
           if (!hasWireless) {
             transports.push({
               type: 'wireless',
-              serial: `${trustedMatch.ipAddress}:${trustedMatch.port || 5555}`,
+              serial: `${trustedMatch.ipAddress}:${trustedMatch.port}`,
               status: 'offline',
               ipAddress: trustedMatch.ipAddress,
-              port: trustedMatch.port || 5555,
+              port: trustedMatch.port,
             });
           }
         }
 
-        // Determine user preferred transport
+        // Determine user preferred / active transport
         const savedPref = this.preferredTransportMap.get(groupKey) || trustedMatch?.preferredTransport;
-        let chosenPref: 'usb' | 'wireless' = 'usb';
-
         const onlineWireless = transports.find((t) => t.type === 'wireless' && t.status === 'online');
         const onlineUsb = transports.find((t) => t.type === 'usb' && t.status === 'online');
 
-        if (savedPref && transports.some((t) => t.type === savedPref)) {
+        let chosenPref: 'usb' | 'wireless' = 'usb';
+
+        if (savedPref && transports.some((t) => t.type === savedPref && t.status === 'online')) {
           chosenPref = savedPref;
-        } else if (this.enableAutoWirelessReconnect && onlineWireless && onlineUsb) {
+        } else if (onlineWireless) {
           chosenPref = 'wireless';
         } else if (onlineUsb) {
           chosenPref = 'usb';
-        } else if (onlineWireless) {
-          chosenPref = 'wireless';
         } else {
           chosenPref = transports[0].type;
         }
@@ -387,6 +435,8 @@ export class DeviceDiscoveryService {
             ? 'unauthorized'
             : 'offline';
 
+        const isTrustedDevice = Boolean(trustedMatch && trustedMatch.isTrusted);
+
         const unifiedDevice: DeviceInfoModel = {
           ...primarySpec,
           id: primarySpec.id || `dev_${groupKey.replace(/[^a-zA-Z0-9]/g, '_')}`,
@@ -396,11 +446,15 @@ export class DeviceDiscoveryService {
           ipAddress: activeTransport.ipAddress || primarySpec.ipAddress || trustedMatch?.ipAddress || '',
           port: activeTransport.port || primarySpec.port || 5555,
           status: overallStatus,
+          isTrusted: isTrustedDevice,
           availableTransports: transports,
           preferredTransport: chosenPref,
         };
 
-        trustedDevicesService.saveDevice(unifiedDevice);
+        if (isTrustedDevice) {
+          trustedDevicesService.saveDevice(unifiedDevice);
+        }
+
         deduplicatedDevices.push(unifiedDevice);
       }
 
@@ -428,8 +482,10 @@ export class DeviceDiscoveryService {
 
       if (hasChanged && isDebounced) {
         this.lastEmitTimestamp = now;
+        const onlineCount = deduplicatedDevices.filter((d) => d.status === 'online').length;
+        const offlineCount = deduplicatedDevices.filter((d) => d.status === 'offline').length;
         logger.info(
-          `[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${deduplicatedDevices.length} unified devices, Online: ${deduplicatedDevices.filter((d) => d.status === 'online').length})`,
+          `[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${onlineCount} online device(s), ${offlineCount} offline/history device(s))`,
           'DeviceDiscoveryService',
         );
         ElectronUtils.sendToRenderer('device:list-updated', deduplicatedDevices);
@@ -446,6 +502,10 @@ export class DeviceDiscoveryService {
 
   public getCachedDevices(): DeviceInfoModel[] {
     return this.cachedDevices.length > 0 ? this.cachedDevices : trustedDevicesService.getAll();
+  }
+
+  public getOnlineDevices(): DeviceInfoModel[] {
+    return this.cachedDevices.filter((d) => d.status === 'online');
   }
 }
 

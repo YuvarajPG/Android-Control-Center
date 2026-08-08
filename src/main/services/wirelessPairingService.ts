@@ -16,8 +16,14 @@ export interface QrPairingSessionData {
   hostIp: string;
   port: number;
   expiresInSeconds: number;
-  status: 'WAITING' | 'PAIRING' | 'CONNECTING' | 'CONNECTED' | 'EXPIRED' | 'FAILED';
+  pairingStatus: 'idle' | 'pairing' | 'paired' | 'failed';
+  connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  portDiscoveryStatus: 'idle' | 'discovering' | 'found' | 'failed';
+  status: 'WAITING' | 'PAIRING' | 'CONNECTING' | 'CONNECTED' | 'EXPIRED' | 'FAILED' | 'PAIRED_PORT_FAILED';
   errorMessage?: string;
+  discoveredIp?: string;
+  discoveredPort?: number;
+  connectedSerial?: string;
 }
 
 export class WirelessPairingService extends EventEmitter {
@@ -140,6 +146,9 @@ export class WirelessPairingService extends EventEmitter {
         hostIp,
         port: actualPort,
         expiresInSeconds: 60,
+        pairingStatus: 'pairing',
+        connectionStatus: 'disconnected',
+        portDiscoveryStatus: 'idle',
         status: 'WAITING',
       };
 
@@ -205,176 +214,300 @@ export class WirelessPairingService extends EventEmitter {
   }
 
   /**
-   * Retrieve paired ADB connection endpoint and execute adb connect <host>:<adb-port>
-   * Official mechanism: Queries `adb mdns services` or `adb devices -l` to obtain the exact active Wireless Debugging endpoint exposed by Android.
-   * No port guessing or brute-force scanning.
+   * Post-pairing verification & endpoint resolution flow.
+   * Pairing success and port discovery are two separate operations.
    */
-  public async connectAndVerifyPairedEndpoint(clientIp: string): Promise<{ success: boolean; message?: string }> {
+  public async connectAndVerifyPairedEndpoint(clientIp: string, pairingPort?: number): Promise<{
+    success: boolean;
+    pairingStatus: 'paired' | 'failed';
+    connectionStatus: 'connected' | 'disconnected';
+    portDiscoveryStatus: 'idle' | 'found' | 'failed';
+    message?: string;
+    device?: any;
+  }> {
     if (this.currentSession) {
-      this.currentSession.status = 'CONNECTING';
+      this.currentSession.pairingStatus = 'paired'; // Pairing HAS SUCCEEDED!
+      this.currentSession.connectionStatus = 'connecting';
+      this.currentSession.portDiscoveryStatus = 'discovering';
       this.emit('pairing:status', this.currentSession);
     }
 
-    logger.info('adb pair successful', 'WirelessPairingService');
-    logger.info('Retrieving wireless endpoint...', 'WirelessPairingService');
+    const effectivePairingPort = pairingPort || this.currentSession?.port || 0;
+    logger.info(
+      `[Wireless Pairing]\nPairing IP: ${clientIp}\nPairing port: ${effectivePairingPort || 'N/A'}\nPairing result: SUCCESS`,
+      'WirelessPairingService'
+    );
+
+    // 1. Force fresh uncached adb devices -l query (bypassing 15s cache!)
+    const rawDevs = await adbService.listRawDevices(true);
+    const rawDevListStr = rawDevs.map((d) => `${d.serial}\t${d.rawStatus}\t(${d.connectionType})`).join('\n');
+
+    logger.info(
+      `[Wireless Connection]\nFresh adb devices result:\n${rawDevListStr || 'No active devices listed'}`,
+      'WirelessPairingService'
+    );
+
+    // Check if USB device is detected
+    const usbDev = rawDevs.find((d) => d.connectionType === 'usb' && (d.rawStatus === 'device' || d.rawStatus === 'online'));
+    if (usbDev) {
+      logger.info(`Detected USB device:\n${usbDev.serial}`, 'WirelessPairingService');
+    }
+
+    // Check if an ACTUAL wireless connection is already online (MUST be wireless connectionType with IP:port)
+    const onlineWirelessDev = rawDevs.find(
+      (d) =>
+        d.connectionType === 'wireless' &&
+        (d.rawStatus === 'device' || d.rawStatus === 'online') &&
+        (d.serial.includes(clientIp) || d.serial === clientIp)
+    );
+
+    if (onlineWirelessDev) {
+      const connSerial = onlineWirelessDev.serial;
+      const connIp = connSerial.includes(':') ? connSerial.split(':')[0] : clientIp;
+      const connPort = connSerial.includes(':') ? parseInt(connSerial.split(':')[1], 10) : 5555;
+
+      logger.info(
+        `[Wireless Connection]\nDetected connected device: ${connSerial}\nConnection type: wireless\nConnection IP: ${connIp}\nConnection port: ${connPort}`,
+        'WirelessPairingService'
+      );
+
+      logger.info(
+        `[Port Discovery]\nDiscovery method: already_connected\nDiscovered connection port: ${connPort}\nDiscovery result: FOUND`,
+        'WirelessPairingService'
+      );
+
+      if (this.currentSession) {
+        this.currentSession.pairingStatus = 'paired';
+        this.currentSession.connectionStatus = 'connected';
+        this.currentSession.portDiscoveryStatus = 'idle';
+        this.currentSession.connectedSerial = connSerial;
+        this.currentSession.status = 'CONNECTED';
+        this.emit('pairing:status', this.currentSession);
+      }
+
+      trustedDevicesService.addDevice({
+        serialNumber: connSerial,
+        deviceName: 'Android Device',
+        model: 'Android Device',
+        ipAddress: connIp,
+        port: connPort,
+        connectionType: 'wireless',
+        lastConnected: Date.now(),
+      });
+
+      return {
+        success: true,
+        pairingStatus: 'paired',
+        connectionStatus: 'connected',
+        portDiscoveryStatus: 'idle',
+        message: 'Wireless connection successful.',
+        device: {
+          serialNumber: connSerial,
+          deviceName: 'Android Device',
+          model: 'Android Device',
+          connectionType: 'wireless',
+          ipAddress: connIp,
+          port: connPort,
+          status: 'online',
+        },
+      };
+    }
+
+    // 2. Wireless is NOT yet connected -> Log wireless state and begin port discovery for clientIp
+    logger.info(
+      `Wireless state for ${clientIp}:\npaired but not connected\n\nWireless connection port:\nNOT YET KNOWN\n\nDiscovery:\nREQUIRED`,
+      'WirelessPairingService'
+    );
 
     let resolvedEndpoint: { ip: string; port: number } | null = null;
+    let discoveryMethod = 'none';
 
-    // Mechanism A: Retrieve via adb mdns services (if mDNS capability supported)
-    try {
-      const mdnsRes = await adbService.getMdnsServices();
-      if (mdnsRes.success && mdnsRes.message) {
-        // Output lines format: _adb-tls-connect._tcp  192.168.1.15:41235
-        const lines = mdnsRes.message.split(/\r?\n/);
-        for (const line of lines) {
-          if (line.includes('_adb-tls-connect') || line.includes('_adb._tcp')) {
-            const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
-            if (match) {
-              const matchedIp = match[1];
-              const matchedPort = parseInt(match[2], 10);
-              if (!clientIp || matchedIp === clientIp) {
-                resolvedEndpoint = { ip: matchedIp, port: matchedPort };
-                break;
-              }
+    // Helper: Parse MDNS output for clientIp
+    const findMdnsPort = (mdnsStdout: string): number | null => {
+      const lines = mdnsStdout.split(/\r?\n/);
+      for (const line of lines) {
+        if (line.includes('_adb-tls-connect') || line.includes('_adb._tcp')) {
+          const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
+          if (match) {
+            const matchedIp = match[1];
+            const matchedPort = parseInt(match[2], 10);
+            if ((!clientIp || matchedIp === clientIp) && matchedPort !== effectivePairingPort) {
+              return matchedPort;
             }
           }
         }
       }
-    } catch {
-      // mDNS query failed or unsupported
-    }
+      return null;
+    };
 
-    // Mechanism B: Query raw devices for newly registered wireless endpoints
-    if (!resolvedEndpoint) {
-      const rawDevs = await adbService.listRawDevices();
-      const wirelessDev = rawDevs.find((d) => d.connectionType === 'wireless' && (d.rawStatus === 'device' || d.rawStatus === 'online'));
-      if (wirelessDev) {
-        const parts = wirelessDev.serial.split(':');
-        if (parts.length === 2) {
-          resolvedEndpoint = { ip: parts[0], port: parseInt(parts[1], 10) };
+    // Mechanism A: adb mdns services (Attempt 1)
+    try {
+      const mdnsRes = await adbService.getMdnsServices();
+      if (mdnsRes.success && mdnsRes.message) {
+        const port = findMdnsPort(mdnsRes.message);
+        if (port) {
+          resolvedEndpoint = { ip: clientIp, port };
+          discoveryMethod = 'mdns';
         }
       }
+    } catch {}
+
+    // Mechanism A2: adb mdns services (Retry after 600ms if not found immediately)
+    if (!resolvedEndpoint) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      try {
+        const mdnsRes = await adbService.getMdnsServices();
+        if (mdnsRes.success && mdnsRes.message) {
+          const port = findMdnsPort(mdnsRes.message);
+          if (port) {
+            resolvedEndpoint = { ip: clientIp, port };
+            discoveryMethod = 'mdns_retry';
+          }
+        }
+      } catch {}
     }
 
-    // Mechanism C: Check existing trusted device store for recent IP/Port mapping
+    // Mechanism B: System mDNS / Avahi service discovery (Linux / macOS system fallback)
+    if (!resolvedEndpoint) {
+      try {
+        const sysMdns = await adbService.discoverSystemMdnsServices();
+        if (sysMdns.success && sysMdns.services.length > 0) {
+          const match = sysMdns.services.find((s) => s.ip === clientIp && s.port !== effectivePairingPort);
+          if (match) {
+            resolvedEndpoint = { ip: clientIp, port: match.port };
+            discoveryMethod = 'system_mdns_avahi';
+          }
+        }
+      } catch {}
+    }
+
+    // Mechanism C: Check existing trusted device store for this explicit IP
     if (!resolvedEndpoint && clientIp) {
-      if (typeof trustedDevicesService.getAllDevices !== 'function') {
-        throw new Error('TrustedDevicesService does not implement getAllDevices()');
-      }
-
-      logger.info('Loading trusted devices...', 'WirelessPairingService');
-      const trustedList = trustedDevicesService.getAllDevices();
-      logger.info(`Loaded ${trustedList.length} trusted devices.`, 'WirelessPairingService');
-      logger.info('Searching for paired endpoint...', 'WirelessPairingService');
-
-      const trusted = trustedList.find((d) => d.ipAddress === clientIp || d.serialNumber.includes(clientIp));
-      if (trusted && trusted.port) {
-        resolvedEndpoint = { ip: trusted.ipAddress || clientIp, port: trusted.port };
-      }
+      try {
+        const trustedList = trustedDevicesService.getAll();
+        const trusted = trustedList.find((d) => d.ipAddress === clientIp || d.serialNumber.includes(clientIp));
+        if (trusted && trusted.port && trusted.port !== effectivePairingPort && trusted.port !== 5555) {
+          resolvedEndpoint = { ip: trusted.ipAddress || clientIp, port: trusted.port };
+          discoveryMethod = 'trusted_store';
+        }
+      } catch {}
     }
+
+    logger.info(
+      `[Port Discovery]\nDiscovery method: ${discoveryMethod}\nDiscovered connection port: ${resolvedEndpoint ? resolvedEndpoint.port : 'NONE'}\nDiscovery result: ${resolvedEndpoint ? 'FOUND' : 'FAILED'}`,
+      'WirelessPairingService'
+    );
 
     if (!resolvedEndpoint) {
-      logger.error(`Could not determine Wireless Debugging connection endpoint for ${clientIp}`, 'WirelessPairingService');
-      const errorMsg = 'Pairing succeeded, but unable to automatically resolve the Wireless Debugging port. Please enter the Wireless Debugging "IP address & port" shown on your phone screen.';
-      if (this.currentSession) {
-        this.currentSession.status = 'FAILED';
-        this.currentSession.errorMessage = errorMsg;
-        this.emit('pairing:status', this.currentSession);
-      }
-      return {
-        success: false,
-        message: errorMsg,
-      };
-    }
+      const failMsg = 'Pairing succeeded, but the Wireless Debugging connection port could not be discovered.';
 
-    const endpointStr = `${resolvedEndpoint.ip}:${resolvedEndpoint.port}`;
-    logger.info(`Endpoint detected: ${endpointStr}`, 'WirelessPairingService');
-    logger.info('adb connect...', 'WirelessPairingService');
-
-    // Execute adb connect only to the real detected endpoint
-    const connRes = await adbService.connectWireless(resolvedEndpoint.ip, resolvedEndpoint.port);
-    if (!connRes.success) {
-      logger.error(`adb connect failed for ${endpointStr}: ${connRes.message}`, 'WirelessPairingService');
-      const failMsg = `Unable to connect to paired device at ${endpointStr}. Please enter the IP address and port from your Wireless Debugging screen.`;
       if (this.currentSession) {
-        this.currentSession.status = 'FAILED';
+        this.currentSession.pairingStatus = 'paired';
+        this.currentSession.connectionStatus = 'disconnected';
+        this.currentSession.portDiscoveryStatus = 'failed';
+        this.currentSession.discoveredIp = clientIp;
+        this.currentSession.status = 'PAIRED_PORT_FAILED';
         this.currentSession.errorMessage = failMsg;
         this.emit('pairing:status', this.currentSession);
       }
+
       return {
-        success: false,
+        success: true, // Pairing itself IS successful!
+        pairingStatus: 'paired',
+        connectionStatus: 'disconnected',
+        portDiscoveryStatus: 'failed',
         message: failMsg,
       };
     }
 
-    logger.info('connected', 'WirelessPairingService');
+    // 3. Connect strictly to discovered connection port (NEVER pairing port!)
+    const endpointStr = `${resolvedEndpoint.ip}:${resolvedEndpoint.port}`;
+    logger.info(
+      `Discovered wireless connection:\n${endpointStr}\n\nExecuting:\nadb connect ${endpointStr}`,
+      'WirelessPairingService'
+    );
 
-    // 3. Verify device state using adb devices
-    logger.info('adb devices', 'WirelessPairingService');
-    const rawDevs = await adbService.listRawDevices();
-    const matched = rawDevs.find((d) => d.serial === endpointStr || d.serial.includes(resolvedEndpoint.ip));
+    const connRes = await adbService.connectWireless(resolvedEndpoint.ip, resolvedEndpoint.port);
+    const postConnectRaw = await adbService.listRawDevices(true);
+    const isNowOnline = postConnectRaw.some(
+      (d) =>
+        (d.serial === endpointStr || d.serial.includes(resolvedEndpoint.ip)) &&
+        d.connectionType === 'wireless' &&
+        (d.rawStatus === 'device' || d.rawStatus === 'online')
+    );
 
-    if (!matched || (matched.rawStatus !== 'device' && matched.rawStatus !== 'online')) {
-      logger.error(`Device state verification failed for ${endpointStr}: ${matched?.rawStatus || 'not found'}`, 'WirelessPairingService');
+    logger.info(
+      `[Wireless Connection]\nFresh adb devices result:\n${postConnectRaw.map((d) => `${d.serial}\t${d.rawStatus}\t(${d.connectionType})`).join('\n')}`,
+      'WirelessPairingService'
+    );
+
+    if (connRes.success && isNowOnline) {
+      logger.info(`Wireless connection: SUCCESS for ${endpointStr}`, 'WirelessPairingService');
+
+      // Fetch actual hardware specs specifically for this wireless endpoint
+      const wirelessSpecs = await adbService.fetchDetailedDeviceSpecs(endpointStr, 'online', 'wireless');
+
       if (this.currentSession) {
-        this.currentSession.status = 'FAILED';
-        this.currentSession.errorMessage = `Device state verification failed (${matched?.rawStatus || 'unauthorized'}).`;
+        this.currentSession.pairingStatus = 'paired';
+        this.currentSession.connectionStatus = 'connected';
+        this.currentSession.portDiscoveryStatus = 'found';
+        this.currentSession.connectedSerial = endpointStr;
+        this.currentSession.status = 'CONNECTED';
         this.emit('pairing:status', this.currentSession);
       }
-      return {
-        success: false,
-        message: `Device verification failed.`,
-      };
-    }
-
-    logger.info('Device verified', 'WirelessPairingService');
-
-    // 4. Fetch full device specs and register in trusted storage
-    try {
-      const connectedDevices = await adbService.getConnectedDevices();
-      const devDetails = connectedDevices.find((d) => d.serialNumber === endpointStr || d.ipAddress === resolvedEndpoint.ip);
-
-      const deviceModel = devDetails?.model || 'Android Phone';
-      const deviceName = devDetails?.deviceName || devDetails?.model || 'Android Device';
-      const androidVersion = devDetails?.androidVersion || '11+';
 
       trustedDevicesService.addDevice({
         serialNumber: endpointStr,
-        deviceName,
-        model: deviceModel,
+        deviceName: wirelessSpecs.deviceName || wirelessSpecs.model || 'Wireless Android Device',
+        model: wirelessSpecs.model || 'Android Phone',
+        manufacturer: wirelessSpecs.manufacturer || 'Android',
+        hardwareSerial: wirelessSpecs.hardwareSerial || endpointStr,
         ipAddress: resolvedEndpoint.ip,
         port: resolvedEndpoint.port,
         connectionType: 'wireless',
         lastConnected: Date.now(),
       });
 
-      logger.info(`Trusted device saved: ${deviceName} (${endpointStr})`, 'WirelessPairingService');
-      logger.info('Setup complete', 'WirelessPairingService');
-
-      this.currentSession.status = 'CONNECTED';
-      this.emit('pairing:status', this.currentSession);
-      this.emit('pairing:completed', {
+      return {
         success: true,
+        pairingStatus: 'paired',
+        connectionStatus: 'connected',
+        portDiscoveryStatus: 'found',
+        message: 'Wireless connection successful.',
         device: {
-          serialNumber: connectedTarget,
-          deviceName,
-          model: deviceModel,
-          androidVersion,
-          ipAddress: clientIp,
+          serialNumber: endpointStr,
+          deviceName: wirelessSpecs.deviceName || wirelessSpecs.model || 'Wireless Android Device',
+          model: wirelessSpecs.model || 'Android Phone',
+          manufacturer: wirelessSpecs.manufacturer || 'Android',
+          hardwareSerial: wirelessSpecs.hardwareSerial || endpointStr,
+          connectionType: 'wireless',
+          ipAddress: resolvedEndpoint.ip,
+          port: resolvedEndpoint.port,
           status: 'online',
         },
-      });
+      };
+    } else {
+      logger.error(`Wireless connection failed for ${endpointStr}`, 'WirelessPairingService');
+      const failMsg = 'Pairing succeeded, but the Wireless Debugging connection could not be established.';
 
-      this.cancelQrPairing(false);
-      return { success: true };
-    } catch (err: any) {
-      logger.error(`Failed registering device: ${err.message}`, 'WirelessPairingService', err);
       if (this.currentSession) {
-        this.currentSession.status = 'FAILED';
-        this.currentSession.errorMessage = `Failed registering device: ${err.message}`;
+        this.currentSession.pairingStatus = 'paired';
+        this.currentSession.connectionStatus = 'disconnected';
+        this.currentSession.portDiscoveryStatus = 'failed';
+        this.currentSession.discoveredIp = resolvedEndpoint.ip;
+        this.currentSession.discoveredPort = resolvedEndpoint.port;
+        this.currentSession.status = 'PAIRED_PORT_FAILED';
+        this.currentSession.errorMessage = failMsg;
         this.emit('pairing:status', this.currentSession);
       }
-      return { success: false, message: `Failed registering device: ${err.message}` };
+
+      return {
+        success: true, // Pairing itself IS successful!
+        pairingStatus: 'paired',
+        connectionStatus: 'disconnected',
+        portDiscoveryStatus: 'failed',
+        message: failMsg,
+      };
     }
   }
 

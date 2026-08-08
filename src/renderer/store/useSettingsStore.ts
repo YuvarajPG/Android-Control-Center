@@ -14,6 +14,12 @@ export interface AppSettings {
   advancedAutomationEnabled: boolean;
   autoStartHelperServices: boolean;
   trustedDeviceReconnect: boolean;
+  autoStartMirrorOnConnect: boolean;
+  lastSelectedDevice: string;
+  lastMirrorQuality: 'high' | 'medium' | 'low';
+  lastFPS: number;
+  lastBitrate: number;
+  lastMirrorOrientation: 'portrait' | 'landscape';
 }
 
 interface SettingsState {
@@ -38,6 +44,12 @@ const defaultSettings: AppSettings = {
   advancedAutomationEnabled: false,
   autoStartHelperServices: true,
   trustedDeviceReconnect: true,
+  autoStartMirrorOnConnect: false,
+  lastSelectedDevice: '',
+  lastMirrorQuality: 'high',
+  lastFPS: 60,
+  lastBitrate: 16,
+  lastMirrorOrientation: 'portrait',
 };
 
 export const useSettingsStore = create<SettingsState>((set, get) => ({

@@ -10,6 +10,9 @@ export interface MediaSessionData {
   playbackState: PlaybackState;
   packageName?: string;
   playbackSpeed?: number;
+  mediaType?: 'music' | 'video' | 'unknown';
+  sourceApp?: string;
+  sourceBadge?: string;
 }
 
 export type MediaControlAction = 'play_pause' | 'next' | 'previous' | 'volume_up' | 'volume_down';

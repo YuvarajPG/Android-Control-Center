@@ -15,7 +15,7 @@ interface DeviceState {
   getSelectedDevice: () => AndroidDevice | undefined;
   refreshDevices: () => Promise<void>;
   reconnectAll: () => Promise<void>;
-  forgetDevice: (serial: string) => Promise<void>;
+  forgetDevice: (serial: string) => Promise<boolean>;
   setPreferredTransport: (deviceId: string, transport: 'usb' | 'wireless') => Promise<void>;
 }
 
@@ -56,7 +56,7 @@ function formatDevice(d: any): AndroidDevice {
 
 // Track whether the IPC listener has already been registered to prevent
 // duplicate handlers being added if initDiscovery is somehow called twice.
-let listenerRegistered = false;
+let listenerRegistered = false;const inFlightForgets = new Set<string>();
 
 export const useDeviceStore = create<DeviceState>((set, get) => ({
   devices: [],
@@ -87,31 +87,25 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     }).catch(() => set({ isLoading: false }));
 
     // Subscribe to real-time background discovery push events exactly once.
-    // The main process emits device:list-updated ONLY when something actually changed,
-    // so we don't need to do change-detection here — but we still guard against
-    // identity-equal arrays causing spurious re-renders.
     if (!listenerRegistered) {
       listenerRegistered = true;
 
       ipcService.on('device:list-updated', (data: unknown) => {
         if (!Array.isArray(data)) return;
-
         const formatted = data.map(formatDevice);
         const current = get().devices;
 
         // Skip state update when the logical device list is identical
         if (!haveDevicesChanged(formatted, current)) return;
 
-        set({ devices: formatted, isLoading: false });
-
         // Maintain or update the active selected device
         const currentSelectedId = get().selectedDeviceId;
         const currentSelected = formatted.find((d) => d.id === currentSelectedId);
+        const nextSelectedId = (!currentSelected || currentSelected.status === 'offline')
+          ? (formatted.find((d) => d.status === 'online')?.id || currentSelectedId)
+          : currentSelectedId;
 
-        if (!currentSelected || currentSelected.status === 'offline') {
-          const firstOnline = formatted.find((d) => d.status === 'online');
-          if (firstOnline) set({ selectedDeviceId: firstOnline.id });
-        }
+        set({ devices: formatted, selectedDeviceId: nextSelectedId });
       });
     }
   },
@@ -149,13 +143,30 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
     }
   },
 
-  forgetDevice: async (serial: string) => {
+  forgetDevice: async (serial: string): Promise<boolean> => {
+    if (!serial || inFlightForgets.has(serial)) return false;
+    inFlightForgets.add(serial);
     try {
-      const list = await ipcService.invoke<any[]>('device:forget-trusted', serial);
-      const formatted = list.map(formatDevice);
-      set({ devices: formatted });
+      console.log(`[IPC -> MAIN] device:forget: ${serial}`);
+      const res = await ipcService.invoke<{ success: boolean; wasRemoved: boolean; deviceName?: string; devices: any[] }>('device:forget', serial);
+      if (res && Array.isArray(res.devices)) {
+        const formatted = res.devices.map(formatDevice);
+        const currentSelectedId = get().selectedDeviceId;
+        const currentSelected = get().devices.find((d) => d.id === currentSelectedId);
+
+        let nextSelectedId = currentSelectedId;
+        if (currentSelected && (currentSelected.serial === serial || currentSelected.hardwareSerial === serial || currentSelected.id === serial)) {
+          const remainingOnline = formatted.find((d) => d.status === 'online');
+          nextSelectedId = remainingOnline?.id || null;
+        }
+
+        set({ devices: formatted, selectedDeviceId: nextSelectedId });
+      }
+      return Boolean(res?.wasRemoved);
     } catch {
-      // ignore error
+      return false;
+    } finally {
+      inFlightForgets.delete(serial);
     }
   },
 

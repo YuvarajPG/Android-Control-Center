@@ -52,10 +52,9 @@ export interface MediaInfo {
   positionMs?: number;
   durationMs?: number;
   artworkUrl?: string;
-  /**
-   * Present when the connected MediaSession implementation supplies its native
-   * playback state. It is optional so older device backends remain compatible.
-   */
+  mediaType?: 'music' | 'video' | 'unknown';
+  sourceApp?: string;
+  sourceBadge?: string;
 }
 
 export interface ScreenshotResult {
@@ -435,6 +434,13 @@ export const ipcService = {
       }
       return ['INTERNET', 'CAMERA', 'ACCESS_FINE_LOCATION'];
     },
+
+    async getIcon(serial: string, packageName: string, apkPath?: string): Promise<string | undefined> {
+      if (ipcService.isAvailable()) {
+        return ipcService.invoke<string | undefined>('app:get-icon', { serial, packageName, apkPath });
+      }
+      return undefined;
+    },
   },
 
   /**
@@ -728,6 +734,12 @@ export const ipcService = {
         advancedAutomationEnabled: false,
         autoStartHelperServices: true,
         trustedDeviceReconnect: true,
+        autoStartMirrorOnConnect: false,
+        lastSelectedDevice: '',
+        lastMirrorQuality: 'high',
+        lastFPS: 60,
+        lastBitrate: 16,
+        lastMirrorOrientation: 'portrait',
       };
     },
 
@@ -748,6 +760,12 @@ export const ipcService = {
         advancedAutomationEnabled: false,
         autoStartHelperServices: true,
         trustedDeviceReconnect: true,
+        autoStartMirrorOnConnect: false,
+        lastSelectedDevice: '',
+        lastMirrorQuality: 'high',
+        lastFPS: 60,
+        lastBitrate: 16,
+        lastMirrorOrientation: 'portrait',
         ...partial,
       };
     },
@@ -769,6 +787,12 @@ export const ipcService = {
         advancedAutomationEnabled: false,
         autoStartHelperServices: true,
         trustedDeviceReconnect: true,
+        autoStartMirrorOnConnect: false,
+        lastSelectedDevice: '',
+        lastMirrorQuality: 'high',
+        lastFPS: 60,
+        lastBitrate: 16,
+        lastMirrorOrientation: 'portrait',
       };
     },
   },

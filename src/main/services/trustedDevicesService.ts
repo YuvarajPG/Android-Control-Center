@@ -111,20 +111,27 @@ export class TrustedDevicesService {
     return this.getAll();
   }
 
+  public getTrustedDevices(): DeviceInfoModel[] {
+    return this.getAll();
+  }
+
   public getBySerial(serial: string): DeviceInfoModel | undefined {
     if (!serial) return undefined;
+    const cleanSerial = serial.trim();
+    if (!cleanSerial) return undefined;
+
     for (const dev of this.trustedDevices.values()) {
       if (
-        dev.hardwareSerial === serial ||
-        dev.id === serial ||
-        dev.serialNumber === serial ||
-        dev.ipAddress === serial ||
-        dev.availableTransports?.some((t) => t.serial === serial)
+        (dev.hardwareSerial && dev.hardwareSerial === cleanSerial) ||
+        (dev.id && dev.id === cleanSerial) ||
+        (dev.serialNumber && dev.serialNumber === cleanSerial) ||
+        (dev.ipAddress && dev.ipAddress === cleanSerial) ||
+        dev.availableTransports?.some((t) => t.serial === cleanSerial)
       ) {
         return dev;
       }
     }
-    return this.trustedDevices.get(serial);
+    return undefined;
   }
 
   public saveDevice(device: DeviceInfoModel): void {
@@ -190,14 +197,60 @@ export class TrustedDevicesService {
     this.saveDevice(updated);
   }
 
-  public removeDevice(serial: string): void {
-    const dev = this.getBySerial(serial);
-    if (dev) {
-      const key = this.getDeviceKey(dev);
-      this.trustedDevices.delete(key);
+  public removeDevice(serial: string): boolean {
+    if (!serial) return false;
+    const clean = serial.trim();
+    if (!clean) return false;
+
+    const beforeCount = this.trustedDevices.size;
+    logger.info(`[TrustedDevicesService] Before: ${beforeCount} trusted device(s)`, 'TrustedDevicesService');
+    logger.info(`[TrustedDevicesService] Removing: ${clean}`, 'TrustedDevicesService');
+
+    const targetDev = this.getBySerial(clean);
+    const keysToDelete = new Set<string>();
+    keysToDelete.add(clean);
+
+    for (const [key, dev] of this.trustedDevices.entries()) {
+      const matchesDirectly =
+        key === clean ||
+        dev.id === clean ||
+        dev.serialNumber === clean ||
+        dev.hardwareSerial === clean ||
+        (dev.ipAddress && dev.ipAddress === clean) ||
+        dev.availableTransports?.some((t) => t.serial === clean);
+
+      const matchesTargetDev =
+        targetDev &&
+        (key === this.getDeviceKey(targetDev) ||
+          dev.id === targetDev.id ||
+          (dev.hardwareSerial && targetDev.hardwareSerial && dev.hardwareSerial === targetDev.hardwareSerial) ||
+          (dev.serialNumber && targetDev.serialNumber && dev.serialNumber === targetDev.serialNumber) ||
+          (dev.model && targetDev.model && dev.model !== 'Generic Device' && dev.model === targetDev.model && dev.manufacturer === targetDev.manufacturer));
+
+      if (matchesDirectly || matchesTargetDev) {
+        keysToDelete.add(key);
+        if (dev.id) keysToDelete.add(dev.id);
+        if (dev.serialNumber) keysToDelete.add(dev.serialNumber);
+        if (dev.hardwareSerial) keysToDelete.add(dev.hardwareSerial);
+      }
     }
-    this.trustedDevices.delete(serial);
-    this.saveToDisk();
+
+    for (const k of keysToDelete) {
+      this.trustedDevices.delete(k);
+    }
+
+    const afterCount = this.trustedDevices.size;
+    logger.info(`[TrustedDevicesService] After: ${afterCount} trusted device(s)`, 'TrustedDevicesService');
+
+    const wasRemoved = beforeCount > afterCount;
+    if (wasRemoved) {
+      this.saveToDisk();
+      logger.info(`[TrustedDevicesService] Successfully removed device '${clean}' from persistent store`, 'TrustedDevicesService');
+      return true;
+    }
+
+    logger.info(`[TrustedDevicesService] Device '${clean}' was not in trusted storage (already removed or not found)`, 'TrustedDevicesService');
+    return false;
   }
 }
 

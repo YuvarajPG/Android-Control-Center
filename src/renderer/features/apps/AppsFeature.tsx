@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   AppWindow,
   Search,
@@ -14,6 +15,7 @@ import {
   Upload,
   Package,
   Clock,
+  Smartphone,
 } from 'lucide-react';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useAppStore } from '../../store/useAppStore';
@@ -41,6 +43,7 @@ function timeAgo(d: Date): string {
 }
 
 export const AppsFeature: React.FC = () => {
+  const navigate = useNavigate();
   const { getSelectedDevice } = useDeviceStore();
   const { addToast } = useAppStore();
   const device = getSelectedDevice();
@@ -74,11 +77,22 @@ export const AppsFeature: React.FC = () => {
 
   /**
    * Load apps from device.
-   * - Does NOT clear existing list while loading (keeps grid visible).
-   * - Always uses the latest filterType from ref (not a dep) to avoid auto-refetch on filter change.
+   * - Does NOT call app:list or execute ADB commands if device is not online.
+   * - Clears package cache when disconnected.
    */
   const loadApps = useCallback(async () => {
-    if (!device || device.status !== 'online' || !serialRef.current) {
+    const isOnline = Boolean(device && device.status === 'online' && serialRef.current);
+    const activeSerial = serialRef.current || 'None';
+
+    console.log('[AppsFeature Audit]', {
+      'Connected device': device?.deviceName || 'None',
+      'ADB serial': activeSerial,
+      'Online': isOnline,
+      'Reason app:list executed': isOnline ? `Valid online device connected (${activeSerial})` : undefined,
+      'Reason app:list skipped': !isOnline ? 'No online Android device connected' : undefined,
+    });
+
+    if (!isOnline) {
       setApps([]);
       setIsRefreshing(false);
       return;
@@ -86,7 +100,7 @@ export const AppsFeature: React.FC = () => {
 
     setIsRefreshing(true);
     try {
-      const list = await ipcService.app.list(serialRef.current, filterTypeRef.current);
+      const list = await ipcService.app.list(serialRef.current, 'all');
       setApps(list);
       setLastUpdatedAt(new Date());
     } catch (err: any) {
@@ -250,6 +264,36 @@ export const AppsFeature: React.FC = () => {
     loadApps(); // Refresh after drop-install
   };
 
+
+
+  if (!device || device.status !== 'online') {
+    return (
+      <div className="space-y-6 max-w-7xl mx-auto pb-8">
+        <PageHeader
+          title="Application Manager"
+          subtitle="Manage installed packages, launch, force-stop, backup APKs, clear data, and drag & drop install APKs"
+        />
+        <Card variant="surface-2" className="p-12 text-center text-m3-on-surface-variant max-w-2xl mx-auto my-8 border-m3-surface-4 shadow-m3-1">
+          <div className="p-4 rounded-full bg-m3-surface-3 text-m3-primary w-16 h-16 mx-auto mb-4 flex items-center justify-center border border-m3-surface-4 shadow-sm">
+            <Smartphone className="h-8 w-8" />
+          </div>
+          <h3 className="text-lg font-bold text-m3-on-surface mb-1">No Android device connected</h3>
+          <p className="text-xs text-m3-on-surface-variant max-w-md mx-auto mb-6 leading-relaxed">
+            Connect an Android device via USB cable or Wireless ADB to inspect, backup, and manage installed applications.
+          </p>
+          <Button
+            variant="filled"
+            size="md"
+            icon={<Plus className="h-4 w-4" />}
+            onClick={() => navigate('/devices')}
+          >
+            Connect Device
+          </Button>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 max-w-7xl mx-auto pb-8">
       <PageHeader
@@ -384,92 +428,94 @@ export const AppsFeature: React.FC = () => {
             )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {processedApps.map((app) => (
-                <Card
-                  key={app.packageName}
-                  variant="surface-2"
-                  className="p-4 flex flex-col justify-between border-m3-surface-4 hover:border-m3-primary/40 transition-all duration-200"
-                >
-                  <div>
-                    <div className="flex items-start justify-between mb-2">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2.5 rounded-m3-md bg-m3-surface-4 text-m3-primary shrink-0">
-                          <AppWindow className="h-5 w-5" />
+              {processedApps.map((app) => {
+                return (
+                  <Card
+                    key={app.packageName}
+                    variant="surface-2"
+                    className="p-4 flex flex-col justify-between border-m3-surface-4 hover:border-m3-primary/40 transition-all duration-200"
+                  >
+                    <div>
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex items-center gap-3">
+                          <div className="p-2.5 rounded-m3-md bg-m3-surface-4 text-m3-primary shrink-0 flex items-center justify-center border border-m3-surface-4/60">
+                            <AppWindow className="h-5 w-5" />
+                          </div>
+                          <div>
+                            <h4 className="text-sm font-bold text-m3-on-surface leading-snug truncate max-w-[170px]">
+                              {app.label}
+                            </h4>
+                            <span className="text-[11px] text-m3-on-surface-variant font-mono block">
+                              v{app.versionName}
+                            </span>
+                          </div>
                         </div>
-                        <div>
-                          <h4 className="text-sm font-bold text-m3-on-surface leading-snug truncate max-w-[170px]">
-                            {app.label}
-                          </h4>
-                          <span className="text-[11px] text-m3-on-surface-variant font-mono block">
-                            v{app.versionName}
-                          </span>
-                        </div>
+                        <Badge variant={app.isSystem ? 'secondary' : 'primary'}>
+                          {app.isSystem ? 'SYSTEM' : 'USER'}
+                        </Badge>
                       </div>
-                      <Badge variant={app.isSystem ? 'secondary' : 'primary'}>
-                        {app.isSystem ? 'SYSTEM' : 'USER'}
-                      </Badge>
+
+                      {/* Full Package Name Display */}
+                      <div className="bg-m3-surface-3 border border-m3-surface-4/60 px-2.5 py-1 rounded-m3-sm text-[11px] font-mono text-m3-on-surface-variant truncate my-2" title={app.packageName}>
+                        {app.packageName}
+                      </div>
                     </div>
 
-                    {/* Full Package Name Display */}
-                    <div className="bg-m3-surface-3 border border-m3-surface-4/60 px-2.5 py-1 rounded-m3-sm text-[11px] font-mono text-m3-on-surface-variant truncate my-2" title={app.packageName}>
-                      {app.packageName}
-                    </div>
-                  </div>
+                    {/* Card Control Buttons */}
+                    <div className="pt-3 border-t border-m3-surface-4/60 flex items-center justify-between gap-1">
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="filled"
+                          size="sm"
+                          icon={<Play className="h-3 w-3" />}
+                          onClick={() => handleLaunch(app)}
+                          title="Launch App"
+                        />
+                        <Button
+                          variant="tonal"
+                          size="sm"
+                          icon={<Square className="h-3 w-3 text-m3-warning" />}
+                          onClick={() => handleStop(app)}
+                          title="Force Stop App"
+                        />
+                      </div>
 
-                  {/* Card Control Buttons */}
-                  <div className="pt-3 border-t border-m3-surface-4/60 flex items-center justify-between gap-1">
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="filled"
-                        size="sm"
-                        icon={<Play className="h-3 w-3" />}
-                        onClick={() => handleLaunch(app)}
-                        title="Launch App"
-                      />
-                      <Button
-                        variant="tonal"
-                        size="sm"
-                        icon={<Square className="h-3 w-3 text-m3-warning" />}
-                        onClick={() => handleStop(app)}
-                        title="Force Stop App"
-                      />
-                    </div>
-
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        icon={<Download className="h-3.5 w-3.5 text-m3-primary" />}
-                        onClick={() => handleExport(app)}
-                        title="Backup / Export APK"
-                      />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        icon={<Eraser className="h-3.5 w-3.5 text-m3-secondary" />}
-                        onClick={() => handleClearData(app)}
-                        title="Clear Cache & Data"
-                      />
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        icon={<Shield className="h-3.5 w-3.5 text-m3-tertiary" />}
-                        onClick={() => handleShowPermissions(app)}
-                        title="Show Permissions"
-                      />
-                      {!app.isSystem && (
+                      <div className="flex items-center gap-1">
                         <Button
                           variant="ghost"
                           size="sm"
-                          icon={<Trash2 className="h-3.5 w-3.5 text-m3-error" />}
-                          onClick={() => handleUninstall(app)}
-                          title="Uninstall App"
+                          icon={<Download className="h-3.5 w-3.5 text-m3-primary" />}
+                          onClick={() => handleExport(app)}
+                          title="Backup / Export APK"
                         />
-                      )}
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Eraser className="h-3.5 w-3.5 text-m3-secondary" />}
+                          onClick={() => handleClearData(app)}
+                          title="Clear Cache & Data"
+                        />
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Shield className="h-3.5 w-3.5 text-m3-tertiary" />}
+                          onClick={() => handleShowPermissions(app)}
+                          title="Show Permissions"
+                        />
+                        {!app.isSystem && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            icon={<Trash2 className="h-3.5 w-3.5 text-m3-error" />}
+                            onClick={() => handleUninstall(app)}
+                            title="Uninstall App"
+                          />
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </Card>
-              ))}
+                  </Card>
+                );
+              })}
             </div>
           </div>
         )}

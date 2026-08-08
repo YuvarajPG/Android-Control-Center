@@ -8,6 +8,7 @@ import { MediaInfoDisplay } from './MediaInfo';
 import { ProgressBar } from './ProgressBar';
 import { PlaybackControls } from './PlaybackControls';
 import { StatusBadge } from './StatusBadge';
+import { formatAppPackageName } from './utils';
 
 interface MediaPlayerProps {
   serial: string;
@@ -38,7 +39,7 @@ export const MediaPlayer: React.FC<MediaPlayerProps> = ({ serial }) => {
       <header className="flex items-center justify-between px-5 pt-5">
         <div className="flex items-center gap-2 text-sm font-bold text-m3-on-surface">
           <Volume2 className="h-[18px] w-[18px] text-m3-tertiary" />
-          Media playback
+          {session?.mediaType === 'video' ? 'Video playback' : 'Media playback'}
         </div>
         {(!hasSession || isStopped) && (
           <button
@@ -70,7 +71,14 @@ export const MediaPlayer: React.FC<MediaPlayerProps> = ({ serial }) => {
           <div className="space-y-4 animate-[media-metadata-in_350ms_ease-out]">
             <div className="flex min-w-0 items-center gap-3.5">
               <Artwork artworkUrl={artworkUrl} title={title} onError={handleArtworkError} />
-              <MediaInfoDisplay title={title} artist={artist} album={album} />
+              <MediaInfoDisplay
+                title={title}
+                artist={artist}
+                album={album}
+                mediaType={session?.mediaType}
+                sourceApp={session?.sourceApp}
+                sourceBadge={session?.sourceBadge}
+              />
             </div>
 
             <ProgressBar position={displayPosition} duration={duration} progressPercent={progressPercent} />
@@ -79,7 +87,7 @@ export const MediaPlayer: React.FC<MediaPlayerProps> = ({ serial }) => {
 
             <div className="flex items-center justify-between rounded-m3-md border border-white/10 bg-black/25 px-3.5 py-2 text-xs text-white/80">
               <span className="font-semibold text-xs text-white/80 truncate max-w-[220px]">
-                {session?.packageName || 'Media Player'}
+                {session?.sourceBadge || formatAppPackageName(session?.packageName)}
               </span>
               <StatusBadge state={playbackState} />
             </div>

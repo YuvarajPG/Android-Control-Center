@@ -22,15 +22,7 @@ interface MediaPlaybackCardProps {
   onAction: (action: MediaAction) => void;
 }
 
-const formatTime = (milliseconds?: number) => {
-  const totalSeconds = Math.max(0, Math.floor((milliseconds ?? 0) / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  return hours > 0
-    ? `${hours}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
-    : `${minutes}:${String(seconds).padStart(2, '0')}`;
-};
+
 
 const getPlaybackState = (media: MediaInfo | null) => {
   if (!media) return 'stopped';
@@ -171,13 +163,9 @@ export const MediaPlaybackCard: React.FC<MediaPlaybackCardProps> = ({ media, isL
               </div>
             </div>
 
-            <div className="space-y-2">
+            <div className="py-1">
               <div className="h-1.5 overflow-hidden rounded-full bg-white/20">
                 <div className="h-full rounded-full bg-m3-primary transition-[width] duration-200 ease-linear" style={{ width: `${progress}%` }} />
-              </div>
-              <div className="flex justify-between font-mono text-xs text-white/70">
-                <span>{formatTime(displayPosition)}</span>
-                <span>{formatTime(duration)}</span>
               </div>
             </div>
 

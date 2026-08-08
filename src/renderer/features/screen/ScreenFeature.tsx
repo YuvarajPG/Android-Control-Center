@@ -125,10 +125,10 @@ export const ScreenFeature: React.FC = () => {
   const deviceName = device?.deviceName || device?.name || device?.model || 'Android device';
   const connectionLabel = device?.connectionType === 'wireless' ? 'Wireless ADB' : 'USB ADB';
 
-  const [isMirroring, setIsMirroring] = useState(true);
-  const [quality, setQuality] = useState<QualityPreset>('high');
-  const [fps, setFps] = useState<number>(60);
-  const [customBitrate, setCustomBitrate] = useState<number | null>(null);
+  const [isMirroring, setIsMirroring] = useState<boolean>(Boolean(settings?.autoStartMirrorOnConnect));
+  const [quality, setQuality] = useState<QualityPreset>(settings?.lastMirrorQuality || settings?.screenMirrorQuality || 'high');
+  const [fps, setFps] = useState<number>(settings?.lastFPS || settings?.screenFpsLimit || 60);
+  const [customBitrate, setCustomBitrate] = useState<number | null>(settings?.lastBitrate || settings?.screenMirrorBitrate || 16);
 
   const [isQualityOpen, setIsQualityOpen] = useState(false);
   const [qualityDropdownPos, setQualityDropdownPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
@@ -146,7 +146,7 @@ export const ScreenFeature: React.FC = () => {
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showFrame, setShowFrame] = useState(true);
-  const [orientation, setOrientation] = useState<Orientation>('portrait');
+  const [orientation, setOrientation] = useState<Orientation>(settings?.lastMirrorOrientation || 'portrait');
   const [zoom, setZoom] = useState(1);
   const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -171,9 +171,10 @@ export const ScreenFeature: React.FC = () => {
 
   useEffect(() => {
     if (settings) {
-      if (settings.screenMirrorQuality) setQuality(settings.screenMirrorQuality);
-      if (settings.screenFpsLimit) setFps(settings.screenFpsLimit);
-      if (settings.screenMirrorBitrate) setCustomBitrate(settings.screenMirrorBitrate);
+      if (settings.lastMirrorQuality || settings.screenMirrorQuality) setQuality(settings.lastMirrorQuality || settings.screenMirrorQuality);
+      if (settings.lastFPS || settings.screenFpsLimit) setFps(settings.lastFPS || settings.screenFpsLimit);
+      if (settings.lastBitrate || settings.screenMirrorBitrate) setCustomBitrate(settings.lastBitrate || settings.screenMirrorBitrate);
+      if (settings.lastMirrorOrientation) setOrientation(settings.lastMirrorOrientation);
     }
   }, [settings]);
 
@@ -185,19 +186,24 @@ export const ScreenFeature: React.FC = () => {
     const defaultFps = newQuality === 'low' ? 30 : 60;
     setFps(defaultFps);
     setIsQualityOpen(false);
-    updateSettings({ screenMirrorQuality: newQuality, screenFpsLimit: defaultFps });
+    updateSettings({
+      screenMirrorQuality: newQuality,
+      screenFpsLimit: defaultFps,
+      lastMirrorQuality: newQuality,
+      lastFPS: defaultFps,
+    });
   };
 
   const handleFpsSelect = (newFps: number) => {
     setFps(newFps);
     setIsFpsOpen(false);
-    updateSettings({ screenFpsLimit: newFps });
+    updateSettings({ screenFpsLimit: newFps, lastFPS: newFps });
   };
 
   const handleBitrateSelect = (newBitrate: number) => {
     setCustomBitrate(newBitrate);
     setIsBitrateOpen(false);
-    updateSettings({ screenMirrorBitrate: newBitrate });
+    updateSettings({ screenMirrorBitrate: newBitrate, lastBitrate: newBitrate });
   };
 
   // Close dropdowns when clicking outside

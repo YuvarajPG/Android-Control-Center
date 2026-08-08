@@ -5,6 +5,7 @@ import { trustedDevicesService } from '../services/trustedDevicesService';
 import { wirelessPairingService } from '../services/wirelessPairingService';
 import { adbCapabilityService } from '../services/adbCapabilityService';
 import { logger } from '../services/loggerService';
+import { ElectronUtils } from '../utils/electronUtils';
 
 export function registerDeviceHandlers(): void {
   // ADB Installation & Status Check
@@ -55,12 +56,111 @@ export function registerDeviceHandlers(): void {
     return res.devices;
   });
 
-  // Forget a trusted device
+  // Add a trusted device
+  ipcMain.handle('device:add-trusted', async (_event, payload: any) => {
+    try {
+      if (payload && payload.serialNumber) {
+        trustedDevicesService.addDevice({
+          serialNumber: payload.serialNumber,
+          deviceName: payload.deviceName || 'Android Device',
+          model: payload.model || 'Android Device',
+          connectionType: payload.connectionType || 'wireless',
+          ipAddress: payload.ipAddress,
+          port: payload.port,
+          lastConnected: payload.lastConnected || Date.now(),
+        });
+      }
+      return { success: true };
+    } catch (err: any) {
+      logger.error('Error adding trusted device', 'DeviceHandler', err);
+      return { success: false, message: err.message };
+    }
+  });
+
+  // Forget a device: full reset, transport disconnect, cache invalidation, and trusted removal
   ipcMain.handle('device:forget-trusted', async (_event, serial: string) => {
-    trustedDevicesService.removeDevice(serial);
+    logger.info(`[MAIN] Forget requested: ${serial}`, 'DeviceHandler');
+    const cachedDevs = deviceDiscoveryService.getCachedDevices();
+    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+    const targetName = dev?.deviceName || dev?.model || serial;
+
+    // 1. Disconnect wireless ADB transports if present
+    if (dev?.availableTransports) {
+      for (const t of dev.availableTransports) {
+        if (t.type === 'wireless' || t.serial.includes(':')) {
+          await adbService.disconnect(t.serial);
+        }
+      }
+    } else if (serial.includes(':')) {
+      await adbService.disconnect(serial);
+    }
+
+    // 2. Invalidate device caches & suppress auto-activation
+    adbService.invalidateStaticDeviceCache(serial);
+    if (dev?.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
+    deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+
+    // 3. Remove from persistent trusted storage
+    const wasRemoved = trustedDevicesService.removeDevice(serial);
+
+    // 4. Refresh discovery
     const updated = await deviceDiscoveryService.scanDevices(true);
     ElectronUtils.sendToRenderer('device:list-updated', updated);
-    return updated;
+
+    logger.info(`[MAIN] Forget result: success for ${targetName}`, 'DeviceHandler');
+    return { success: true, wasRemoved, deviceName: targetName, devices: updated };
+  });
+
+  ipcMain.handle('device:forget', async (_event, serial: string) => {
+    logger.info(`[MAIN] Forget requested: ${serial}`, 'DeviceHandler');
+    const cachedDevs = deviceDiscoveryService.getCachedDevices();
+    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+    const targetName = dev?.deviceName || dev?.model || serial;
+
+    // 1. Disconnect wireless ADB transports if present
+    if (dev?.availableTransports) {
+      for (const t of dev.availableTransports) {
+        if (t.type === 'wireless' || t.serial.includes(':')) {
+          await adbService.disconnect(t.serial);
+        }
+      }
+    } else if (serial.includes(':')) {
+      await adbService.disconnect(serial);
+    }
+
+    // 2. Invalidate device caches & suppress auto-activation
+    adbService.invalidateStaticDeviceCache(serial);
+    if (dev?.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
+    deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+
+    // 3. Remove from persistent trusted storage
+    const wasRemoved = trustedDevicesService.removeDevice(serial);
+
+    // 4. Refresh discovery
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
+
+    logger.info(`[MAIN] Forget result: success for ${targetName}`, 'DeviceHandler');
+    return { success: true, wasRemoved, deviceName: targetName, devices: updated };
+  });
+
+  // List trusted devices
+  ipcMain.handle('device:list-trusted', async () => {
+    try {
+      return trustedDevicesService.getTrustedDevices();
+    } catch (err: any) {
+      logger.error('Error listing trusted devices', 'DeviceHandler', err);
+      return [];
+    }
+  });
+
+  ipcMain.handle('device:get-trusted', async () => {
+    try {
+      return trustedDevicesService.getTrustedDevices();
+    } catch (err: any) {
+      logger.error('Error listing trusted devices', 'DeviceHandler', err);
+      return [];
+    }
   });
 
   // Set preferred transport for unified device
@@ -68,30 +168,94 @@ export function registerDeviceHandlers(): void {
     return deviceDiscoveryService.setPreferredTransport(payload.deviceId, payload.transport);
   });
 
-  // Feature: adb connect <ip>:<port>
-  ipcMain.handle('device:connect-wireless', async (_event, payload: { ip: string; port?: number }) => {
-    const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
-    // Trigger rescan after connection attempt so device:list-updated fires if topology changed
-    deviceDiscoveryService.scanDevices();
-    return res;
+  // Feature: adb connect <ip>:<port> or manual activate
+  ipcMain.handle('device:connect-wireless', async (_event, payload: { ip: string; port?: number; serial?: string }) => {
+    const cleanIp = payload.ip.trim();
+    const cleanPort = payload.port || 5555;
+    const target = `${cleanIp}:${cleanPort}`;
+    logger.info(`[MAIN] device:connect-wireless received for ${target}`, 'DeviceHandler');
+
+    deviceDiscoveryService.clearSuppression(target);
+    deviceDiscoveryService.clearSuppression(cleanIp);
+    if (payload.serial) deviceDiscoveryService.clearSuppression(payload.serial);
+
+    const res = await adbService.connectWireless(cleanIp, cleanPort);
+    const postRaw = await adbService.listRawDevices(true);
+    const isOnline = postRaw.some(
+      (d) => (d.serial === target || d.serial.includes(cleanIp)) && d.connectionType === 'wireless' && (d.rawStatus === 'device' || d.rawStatus === 'online')
+    );
+
+    if (isOnline) {
+      const devSpecs = await adbService.fetchDetailedDeviceSpecs(target, 'online', 'wireless');
+      trustedDevicesService.addDevice({
+        serialNumber: target,
+        deviceName: devSpecs.deviceName || devSpecs.model || 'Wireless Android Device',
+        model: devSpecs.model || 'Android Phone',
+        manufacturer: devSpecs.manufacturer || 'Android',
+        hardwareSerial: devSpecs.hardwareSerial || target,
+        ipAddress: cleanIp,
+        port: cleanPort,
+        connectionType: 'wireless',
+        lastConnected: Date.now(),
+      });
+      const updated = await deviceDiscoveryService.scanDevices(true);
+      ElectronUtils.sendToRenderer('device:list-updated', updated);
+      return { success: true, device: devSpecs, devices: updated };
+    } else {
+      return { success: false, message: res.message || `Failed connecting to ${target}` };
+    }
+  });
+
+  ipcMain.handle('device:activate', async (_event, serial: string) => {
+    logger.info(`[MAIN] device:activate received for ${serial}`, 'DeviceHandler');
+    deviceDiscoveryService.clearSuppression(serial);
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
+    return { success: true, devices: updated };
   });
 
   ipcMain.handle('adb:connect', async (_event, payload: { ip: string; port?: number }) => {
+    logger.info(`[MAIN] adb:connect received for ${payload.ip}`, 'DeviceHandler');
+    const target = `${payload.ip}:${payload.port || 5555}`;
+    deviceDiscoveryService.clearSuppression(target);
+    deviceDiscoveryService.clearSuppression(payload.ip);
     const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
     return res;
+  });
+
+  ipcMain.handle('wireless:discover-endpoint', async (_event, payload: { ip: string; pairingPort?: number }) => {
+    logger.info(`[MAIN] wireless:discover-endpoint for ${payload.ip}`, 'DeviceHandler');
+    return wirelessPairingService.connectAndVerifyPairedEndpoint(payload.ip, payload.pairingPort);
   });
 
   // Feature: adb disconnect [target]
   ipcMain.handle('device:disconnect', async (_event, serial?: string) => {
+    logger.info(`[MAIN] device:disconnect received for ${serial || 'all'}`, 'DeviceHandler');
+    if (serial) {
+      const dev = deviceDiscoveryService.getCachedDevices().find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+      deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+    } else {
+      deviceDiscoveryService.suppressDevice();
+    }
     const res = await adbService.disconnect(serial);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
     return res;
   });
 
   ipcMain.handle('adb:disconnect', async (_event, serial?: string) => {
+    logger.info(`[MAIN] adb:disconnect received for ${serial || 'all'}`, 'DeviceHandler');
+    if (serial) {
+      const dev = deviceDiscoveryService.getCachedDevices().find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+      deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+    } else {
+      deviceDiscoveryService.suppressDevice();
+    }
     const res = await adbService.disconnect(serial);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
     return res;
   });
 
@@ -105,51 +269,48 @@ export function registerDeviceHandlers(): void {
     return adbService.startServer();
   });
 
-  // Feature: adb pair <ip>:<port> <pairingCode>
+  // Feature: adb pair <pairingIp>:<pairingPort> <pairingCode>
   ipcMain.handle('adb:pair', async (_event, payload: { ip: string; port: number; pairingCode: string }) => {
-    logger.info('adb pair started', 'DeviceHandler');
-    logger.info(`IPC adb:pair requested for ${payload.ip}:${payload.port}`, 'DeviceHandler');
+    const pairingIp = payload.ip;
+    const pairingPort = payload.port;
+    const pairingCode = payload.pairingCode;
 
-    const pairRes = await adbService.pairWireless(payload.ip, payload.port, payload.pairingCode);
+    logger.info(
+      `[Wireless Pairing]\nPairing IP: ${pairingIp}\nPairing port: ${pairingPort}`,
+      'DeviceHandler'
+    );
+
+    const pairRes = await adbService.pairWireless(pairingIp, pairingPort, pairingCode);
+
+    logger.info(
+      `[Wireless Pairing]\nPairing IP: ${pairingIp}\nPairing port: ${pairingPort}\nPairing result: ${pairRes.success ? 'SUCCESS' : 'FAILED'}`,
+      'DeviceHandler'
+    );
+
     if (!pairRes.success) {
-      logger.error(`adb pair failed: ${pairRes.message}`, 'DeviceHandler');
-      return pairRes;
-    }
-
-    logger.info('adb pair successful', 'DeviceHandler');
-
-    // Retrieve active wireless endpoint and execute adb connect
-    const connRes = await wirelessPairingService.connectAndVerifyPairedEndpoint(payload.ip);
-    if (!connRes.success) {
-      logger.error(`adb connect failed: ${connRes.message}`, 'DeviceHandler');
+      logger.error(`[Wireless Pairing] adb pair failed: ${pairRes.message}`, 'DeviceHandler');
       return {
         success: false,
-        message: connRes.message || 'Pairing succeeded, but unable to connect to Wireless Debugging endpoint. Please ensure Wireless Debugging is enabled on your phone and try connecting with the IP address and port.',
+        pairingStatus: 'failed',
+        connectionStatus: 'disconnected',
+        portDiscoveryStatus: 'idle',
+        message: pairRes.message || 'Pairing failed. Please check pairing port and code.',
       };
     }
 
-    // Verify adb devices output contains active 'device' state
-    logger.info('adb devices', 'DeviceHandler');
-    const rawDevs = await adbService.listRawDevices();
-    logger.info(`adb devices returned ${rawDevs.length} devices`, 'DeviceHandler');
+    // Pairing succeeded! Execute post-pairing connection & verification pipeline.
+    const connRes = await wirelessPairingService.connectAndVerifyPairedEndpoint(pairingIp, pairingPort);
 
-    const onlineDev = rawDevs.find((d) => d.rawStatus === 'device' || d.rawStatus === 'online');
-    if (!onlineDev) {
-      logger.warn('adb devices returned 0 connected devices in state "device"', 'DeviceHandler');
-      return {
-        success: false,
-        message: 'Pairing succeeded, but no connected device was found in state "device". Please check Wireless Debugging on your phone.',
-      };
-    }
-
-    logger.info(`Found 1 connected device: ${onlineDev.serial}`, 'DeviceHandler');
-    logger.info('Device verified', 'DeviceHandler');
-    logger.info('Saving trusted device', 'DeviceHandler');
-    logger.info('Setup complete', 'DeviceHandler');
+    // Force fresh background device discovery scan (uncached)
+    deviceDiscoveryService.scanDevices(true).catch(() => {});
 
     return {
-      success: true,
-      message: 'Device paired, connected, and verified successfully!',
+      success: true, // PAIRING ITSELF SUCCEEDED!
+      pairingStatus: 'paired',
+      connectionStatus: connRes.connectionStatus,
+      portDiscoveryStatus: connRes.portDiscoveryStatus,
+      message: connRes.message || 'Device paired successfully.',
+      device: (connRes as any).device,
     };
   });
 

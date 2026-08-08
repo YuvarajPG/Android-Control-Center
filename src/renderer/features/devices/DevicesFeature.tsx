@@ -12,8 +12,10 @@ import {
   HardDrive,
   Trash2,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 import { useDeviceStore } from '../../store/useDeviceStore';
+import { AndroidDevice } from '../../types/device';
 import { useAppStore } from '../../store/useAppStore';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Card } from '../../components/common/Card';
@@ -21,13 +23,67 @@ import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
 import { Modal } from '../../components/common/Modal';
 import { Input } from '../../components/common/Input';
+import { Tooltip } from '../../components/common/Tooltip';
 import { ipcService } from '../../services/ipcService';
+
+export interface DeviceActionConfig {
+  showConnect: boolean;
+  showDisconnect: boolean;
+  showForget: boolean;
+}
+
+export function resolveDeviceActions(device: AndroidDevice): DeviceActionConfig {
+  const isOnline = device.status === 'online';
+  const isUsb = device.connectionType === 'usb' || (!device.serial?.includes(':') && !device.ipAddress);
+  const isWireless = device.connectionType === 'wireless' || Boolean(device.serial?.includes(':') || device.ipAddress);
+  const isRemembered = Boolean(device.isTrusted);
+
+  if (isUsb && isOnline) {
+    return {
+      showConnect: false,
+      showDisconnect: true,
+      showForget: false,
+    };
+  }
+
+  if (isUsb && !isOnline) {
+    return {
+      showConnect: true,
+      showDisconnect: false,
+      showForget: true,
+    };
+  }
+
+  if (isWireless && isOnline) {
+    return {
+      showConnect: false,
+      showDisconnect: true,
+      showForget: true,
+    };
+  }
+
+  if (isWireless && !isOnline) {
+    return {
+      showConnect: true,
+      showDisconnect: false,
+      showForget: isRemembered,
+    };
+  }
+
+  return {
+    showConnect: !isOnline,
+    showDisconnect: isOnline,
+    showForget: isRemembered && !isOnline,
+  };
+}
 
 export const DevicesFeature: React.FC = () => {
   const { devices, selectedDeviceId, setSelectedDeviceId, setPreferredTransport, refreshDevices, reconnectAll, forgetDevice, isLoading, isAutoWirelessEnabled, autoWirelessMessage } = useDeviceStore();
   const { addToast } = useAppStore();
 
   const [isPairModalOpen, setIsPairModalOpen] = useState(false);
+  const [deviceToForget, setDeviceToForget] = useState<AndroidDevice | null>(null);
+  const [isForgetExecuting, setIsForgetExecuting] = useState(false);
   const [ipInput, setIpInput] = useState('192.168.1.');
   const [portInput, setPortInput] = useState('5555');
   const [pairingCode, setPairingCode] = useState('');
@@ -47,6 +103,26 @@ export const DevicesFeature: React.FC = () => {
       addToast('error', `Failed connecting: ${err.message}`);
     }
     setIsPairModalOpen(false);
+  };
+
+  const handleConfirmForget = async () => {
+    if (!deviceToForget || isForgetExecuting) return;
+    setIsForgetExecuting(true);
+    const targetSerial = deviceToForget.serial;
+    const targetName = deviceToForget.name || deviceToForget.deviceName || deviceToForget.model || targetSerial;
+
+    console.log(`[UI] Confirming Forget for: ${targetSerial}`);
+    try {
+      const wasRemoved = await forgetDevice(targetSerial);
+      if (wasRemoved) {
+        addToast('info', `Forgot ${targetName}`);
+      }
+    } catch (err: any) {
+      addToast('error', `Failed forgetting device: ${err.message}`);
+    } finally {
+      setIsForgetExecuting(false);
+      setDeviceToForget(null);
+    }
   };
 
   return (
@@ -97,10 +173,10 @@ export const DevicesFeature: React.FC = () => {
 
       {/* Target Devices Grid */}
       {devices.length === 0 ? (
-        <Card variant="surface-2" className="p-8 text-center text-m3-on-surface-variant my-4">
-          <Smartphone className="h-12 w-12 text-m3-primary/40 mx-auto mb-3 animate-pulse" />
-          <h3 className="text-base font-bold text-m3-on-surface">Searching for Android Devices...</h3>
-          <p className="text-xs text-m3-on-surface-variant max-w-md mx-auto mt-1">
+        <Card variant="surface-2" className="p-8 text-center border border-dashed border-m3-outline-variant my-4">
+          <Smartphone className="h-12 w-12 mx-auto text-m3-on-surface-variant/40 mb-3" />
+          <h3 className="text-base font-medium text-m3-on-surface">No Connected or Remembered Devices Found</h3>
+          <p className="text-xs text-m3-on-surface-variant mt-1 max-w-md mx-auto">
             Connect an Android device via USB with USB Debugging enabled, or pair a wireless ADB target.
           </p>
         </Card>
@@ -118,6 +194,7 @@ export const DevicesFeature: React.FC = () => {
                 port: device.port,
               },
             ];
+            const actions = resolveDeviceActions(device);
 
             return (
               <Card
@@ -137,118 +214,122 @@ export const DevicesFeature: React.FC = () => {
                       <h3 className="text-base font-bold text-m3-on-surface leading-snug">
                         {device.name || device.deviceName || device.model}
                       </h3>
-                      <p className="text-xs text-m3-on-surface-variant font-mono">
+                      <p className="text-xs text-m3-on-surface-variant">
                         {device.manufacturer} • {device.model}
                       </p>
                     </div>
                   </div>
-                  <Badge
-                    variant={
-                      device.status === 'online'
-                        ? 'success'
-                        : device.status === 'unauthorized'
-                          ? 'warning'
-                          : 'neutral'
-                    }
-                    dot
-                  >
-                    {device.status.toUpperCase()}
+                  <Badge variant={isOnline ? 'success' : 'neutral'} dot>
+                    {isOnline ? 'ONLINE' : 'OFFLINE'}
                   </Badge>
                 </div>
 
-                {/* Device Specification Metadata Table */}
-                <div className="space-y-2 py-3 text-xs border-t border-b border-m3-surface-4/60 my-3 font-mono">
-                  <div className="flex justify-between text-m3-on-surface-variant">
+                {/* Specs List */}
+                <div className="space-y-1.5 text-xs text-m3-on-surface-variant py-2 border-t border-b border-m3-surface-4/40 mb-3">
+                  <div className="flex justify-between">
                     <span>Manufacturer:</span>
-                    <span className="text-m3-on-surface font-semibold">{device.manufacturer || 'Android'}</span>
+                    <span className="text-m3-on-surface font-medium">{device.manufacturer || 'Android'}</span>
                   </div>
-                  <div className="flex justify-between text-m3-on-surface-variant">
+                  <div className="flex justify-between">
                     <span>Model:</span>
-                    <span className="text-m3-on-surface">{device.model}</span>
+                    <span className="text-m3-on-surface font-medium">{device.model || 'Generic Device'}</span>
                   </div>
-                  <div className="flex justify-between text-m3-on-surface-variant">
+                  <div className="flex justify-between">
                     <span>Android Version:</span>
-                    <span className="text-m3-on-surface">{device.androidVersion}</span>
-                  </div>
-                  <div className="flex justify-between text-m3-on-surface-variant">
-                    <span>Hardware Serial:</span>
-                    <span className="text-m3-on-surface">{device.hardwareSerial || device.serialNumber || device.serial}</span>
-                  </div>
-
-                  {/* Available Transports */}
-                  <div className="pt-2 border-t border-m3-surface-4/40 space-y-1">
-                    <span className="text-m3-on-surface-variant block font-sans font-semibold text-[11px]">
-                      Available Transports:
+                    <span className="text-m3-on-surface font-medium">
+                      Android {device.androidVersion || '14'} (API {(device as any).apiLevel || '34'})
                     </span>
-                    {availableTransports.map((t) => (
-                      <div key={t.type + t.serial} className="flex items-center justify-between pl-1">
-                        <span className="flex items-center gap-1.5 text-m3-on-surface font-medium">
-                          {t.type === 'usb' ? (
-                            <Usb className="h-3.5 w-3.5 text-m3-primary" />
-                          ) : (
-                            <Wifi className="h-3.5 w-3.5 text-m3-secondary" />
-                          )}
-                          ✔ {t.type.toUpperCase()} ({t.serial})
-                        </span>
-                        <span
-                          className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${
-                            t.status === 'online' ? 'bg-m3-success/20 text-m3-success' : 'bg-m3-surface-4 text-m3-on-surface-variant'
-                          }`}
-                        >
-                          {t.status.toUpperCase()}
-                        </span>
-                      </div>
-                    ))}
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Hardware Serial:</span>
+                    <span className="font-mono text-m3-on-surface font-medium">
+                      {device.hardwareSerial || device.serial}
+                    </span>
                   </div>
 
-                  {/* Preferred Transport Selector */}
-                  <div className="flex items-center justify-between pt-2 border-t border-m3-surface-4/40">
-                    <span className="text-m3-on-surface-variant font-sans font-semibold text-[11px]">Preferred transport:</span>
-                    <div className="flex items-center gap-1 bg-m3-surface-4/80 p-0.5 rounded-m3-md">
-                      {['usb', 'wireless'].map((tType) => {
-                        const isPref = (device.preferredTransport || device.connectionType) === tType;
-                        const hasTransport = availableTransports.some((t) => t.type === tType);
-                        return (
-                          <button
-                            key={tType}
-                            type="button"
-                            disabled={!hasTransport}
-                            onClick={() => {
-                              setPreferredTransport(device.id, tType as 'usb' | 'wireless');
-                              addToast('info', `Set preferred transport to ${tType.toUpperCase()} for ${device.name || device.model}`);
-                            }}
-                            className={`px-2 py-0.5 text-[10px] rounded font-bold capitalize transition-all ${
-                              isPref
-                                ? 'bg-m3-primary text-m3-on-primary shadow-sm'
-                                : hasTransport
-                                  ? 'text-m3-on-surface hover:bg-m3-surface-3'
-                                  : 'text-m3-on-surface-variant/40 cursor-not-allowed'
+                  {/* Multi-transport Available Selector */}
+                  <div className="pt-2">
+                    <span className="text-[11px] font-semibold text-m3-on-surface-variant">Available Transports:</span>
+                    <div className="mt-1 space-y-1">
+                      {availableTransports.map((t) => (
+                        <div
+                          key={t.type + t.serial}
+                          className="flex items-center justify-between p-1.5 rounded-m3-sm bg-m3-surface-3 border border-m3-surface-4/60 text-[11px]"
+                        >
+                          <div className="flex items-center gap-1.5">
+                            {t.type === 'usb' ? (
+                              <Usb className="h-3 w-3 text-m3-primary" />
+                            ) : (
+                              <Wifi className="h-3 w-3 text-m3-tertiary" />
+                            )}
+                            {device.preferredTransport === t.type && (
+                              <span className="text-m3-primary font-bold text-xs">✓</span>
+                            )}
+                            <span className="capitalize font-medium text-m3-on-surface">{t.type}</span>
+                            <span className="font-mono text-m3-on-surface-variant">({t.serial})</span>
+                          </div>
+                          <span
+                            className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${
+                              t.status === 'online'
+                                ? 'bg-m3-primary-container text-m3-on-primary-container'
+                                : 'bg-m3-surface-4 text-m3-on-surface-variant'
                             }`}
                           >
-                            {tType}
-                          </button>
-                        );
-                      })}
+                            {t.status}
+                          </span>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
+                  {/* Transport Preference Switcher */}
+                  {availableTransports.length > 1 && (
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-[11px] text-m3-on-surface-variant">Preferred transport:</span>
+                      <div className="flex items-center gap-1 bg-m3-surface-3 p-0.5 rounded border border-m3-surface-4">
+                        <button
+                          type="button"
+                          onClick={() => setPreferredTransport(device.id, 'usb')}
+                          className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                            device.preferredTransport === 'usb'
+                              ? 'bg-m3-primary text-m3-on-primary shadow-xs font-bold'
+                              : 'text-m3-on-surface-variant hover:text-m3-on-surface'
+                          }`}
+                        >
+                          Usb
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPreferredTransport(device.id, 'wireless')}
+                          className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                            device.preferredTransport === 'wireless'
+                              ? 'bg-m3-primary text-m3-on-primary shadow-xs font-bold'
+                              : 'text-m3-on-surface-variant hover:text-m3-on-surface'
+                          }`}
+                        >
+                          Wireless
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Battery & Storage */}
-                  <div className="flex justify-between text-m3-on-surface-variant pt-2 border-t border-m3-surface-4/40">
+                  <div className="flex justify-between pt-1">
                     <span>Battery Status:</span>
                     <span className="text-m3-on-surface flex items-center gap-1">
                       {device.isCharging ? (
-                        <BatteryCharging className="h-3.5 w-3.5 text-m3-success inline" />
+                        <BatteryCharging className="h-3 w-3 text-m3-primary inline" />
                       ) : (
-                        <Battery className="h-3.5 w-3.5 text-m3-warning inline" />
+                        <Battery className="h-3 w-3 text-m3-tertiary inline" />
                       )}
-                      {device.batteryLevel}% {device.isCharging ? '(Charging)' : ''}
+                      {device.batteryLevel ?? 100}% ({device.isCharging ? 'Charging' : 'Discharging'})
                     </span>
                   </div>
-                  <div className="flex justify-between text-m3-on-surface-variant">
+                  <div className="flex justify-between">
                     <span>Storage Free:</span>
                     <span className="text-m3-on-surface flex items-center gap-1">
                       <HardDrive className="h-3 w-3 text-m3-primary inline" />
-                      {device.storageFree} free / {device.storageTotal}
+                      {device.storageFree || '64GB'} free / {device.storageTotal || '128GB'}
                     </span>
                   </div>
                 </div>
@@ -268,31 +349,53 @@ export const DevicesFeature: React.FC = () => {
                   </Button>
 
                   <div className="flex items-center gap-1">
-                    {device.connectionType === 'wireless' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        icon={<Power className="h-3.5 w-3.5 text-m3-warning" />}
-                        onClick={async () => {
-                          await ipcService.adb.disconnect(device.serial);
-                          refreshDevices();
-                          addToast('warning', `Disconnected ${device.serial}`);
-                        }}
-                      >
-                        Disconnect
-                      </Button>
+                    {actions.showConnect && (
+                      <Tooltip content="Connect / Activate device" position="top">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<RefreshCw className="h-3.5 w-3.5 text-m3-primary" />}
+                          onClick={async () => {
+                            console.log(`[UI] Connect clicked: ${device.serial}`);
+                            await ipcService.invoke('device:activate', device.serial);
+                            addToast('info', `Activating ${device.name || device.serial}...`);
+                          }}
+                        >
+                          Connect
+                        </Button>
+                      </Tooltip>
                     )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      icon={<Trash2 className="h-3.5 w-3.5 text-m3-on-surface-variant hover:text-m3-error" />}
-                      onClick={async () => {
-                        await forgetDevice(device.serial);
-                        await refreshDevices();
-                        addToast('info', `Removed ${device.name || device.serial} from remembered devices`);
-                      }}
-                      title="Forget Remembered Device"
-                    />
+                    {actions.showDisconnect && (
+                      <Tooltip content="Disconnect from application" position="top">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Power className="h-3.5 w-3.5 text-m3-warning" />}
+                          onClick={async () => {
+                            console.log(`[UI] Disconnect clicked: ${device.serial}`);
+                            await ipcService.adb.disconnect(device.serial);
+                            addToast('warning', `Disconnected ${device.name || device.serial}`);
+                          }}
+                        >
+                          Disconnect
+                        </Button>
+                      </Tooltip>
+                    )}
+                    {actions.showForget && (
+                      <Tooltip content="Forget Remembered Device" position="top">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Trash2 className="h-3.5 w-3.5 text-m3-on-surface-variant hover:text-m3-error" />}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            console.log(`[UI] Open Forget Confirmation for: ${device.serial}`);
+                            setDeviceToForget(device);
+                          }}
+                        />
+                      </Tooltip>
+                    )}
                   </div>
                 </div>
               </Card>
@@ -300,6 +403,63 @@ export const DevicesFeature: React.FC = () => {
           })}
         </div>
       )}
+
+      {/* Forget Device Confirmation Modal */}
+      <Modal
+        isOpen={Boolean(deviceToForget)}
+        onClose={() => setDeviceToForget(null)}
+        title="Forget this device?"
+        maxWidth="md"
+        footer={
+          <>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={isForgetExecuting}
+              onClick={() => setDeviceToForget(null)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              isLoading={isForgetExecuting}
+              onClick={handleConfirmForget}
+            >
+              Forget Device
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-4 text-xs text-m3-on-surface-variant">
+          <p className="leading-relaxed">
+            This will remove{' '}
+            <strong className="text-m3-on-surface font-semibold">
+              {deviceToForget?.name || deviceToForget?.deviceName || deviceToForget?.model || deviceToForget?.serial}
+            </strong>{' '}
+            from remembered devices and clear its connection/trust information from this computer.
+          </p>
+
+          {deviceToForget?.connectionType === 'wireless' && (
+            <p className="text-m3-warning font-medium">
+              The current wireless ADB connection will be disconnected. You will need to pair/connect this device again.
+            </p>
+          )}
+
+          <div className="p-3.5 rounded-m3-md bg-m3-surface-3 border border-m3-surface-4 space-y-2">
+            <div className="flex items-center gap-1.5 text-m3-on-surface font-semibold">
+              <AlertTriangle className="h-4 w-4 text-m3-warning shrink-0" />
+              <span>For complete re-authorization, revoke USB debugging authorizations on your phone:</span>
+            </div>
+            <div className="font-mono text-[11px] bg-m3-surface-1 p-2 rounded border border-m3-surface-4 text-m3-primary">
+              Developer Options → Revoke USB debugging authorizations
+            </div>
+            <p className="text-[11px] text-m3-on-surface-variant/80">
+              After reconnecting, Android will ask you to authorize this computer again.
+            </p>
+          </div>
+        </div>
+      </Modal>
 
       {/* Wireless Pairing Modal */}
       <Modal

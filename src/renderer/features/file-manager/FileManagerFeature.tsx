@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Folder,
   FileText,
@@ -22,6 +23,8 @@ import {
   File,
   Loader2,
   X,
+  Smartphone,
+  Plus,
 } from 'lucide-react';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useAppStore } from '../../store/useAppStore';
@@ -68,6 +71,7 @@ interface FileWithPath extends File {
 }
 
 export const FileManagerFeature: React.FC = () => {
+  const navigate = useNavigate();
   const { getSelectedDevice } = useDeviceStore();
   const { addToast } = useAppStore();
   const device = getSelectedDevice();
@@ -398,6 +402,34 @@ export const FileManagerFeature: React.FC = () => {
     setSelectedItem(item);
     setContextMenu({ visible: true, x: e.clientX, y: e.clientY, item });
   };
+
+  if (!device || device.status !== 'online') {
+    return (
+      <div className="space-y-4 max-w-7xl mx-auto pb-6">
+        <PageHeader
+          title="Android File Manager"
+          subtitle="Browse internal storage, upload, download, drag & drop, and manage target device files"
+        />
+        <Card variant="surface-2" className="p-12 text-center text-m3-on-surface-variant max-w-2xl mx-auto my-8 border-m3-surface-4 shadow-m3-1">
+          <div className="p-4 rounded-full bg-m3-surface-3 text-m3-primary w-16 h-16 mx-auto mb-4 flex items-center justify-center border border-m3-surface-4 shadow-sm">
+            <Smartphone className="h-8 w-8" />
+          </div>
+          <h3 className="text-lg font-bold text-m3-on-surface mb-1">No Android device connected</h3>
+          <p className="text-xs text-m3-on-surface-variant max-w-md mx-auto mb-6 leading-relaxed">
+            Connect an Android device via USB cable or Wireless ADB to explore internal storage and transfer files.
+          </p>
+          <Button
+            variant="filled"
+            size="md"
+            icon={<Plus className="h-4 w-4" />}
+            onClick={() => navigate('/devices')}
+          >
+            Connect Device
+          </Button>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 max-w-7xl mx-auto pb-6" ref={containerRef}>

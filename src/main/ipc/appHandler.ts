@@ -9,6 +9,7 @@ export function registerAppHandlers(): void {
     return appManagerService.listApps(payload.serial, payload.filter);
   });
 
+
   // Open native OS file dialog to select local APK files for Install
   ipcMain.handle('app:select-apk-install', async () => {
     const result = await dialog.showOpenDialog({

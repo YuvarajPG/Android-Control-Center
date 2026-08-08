@@ -285,15 +285,20 @@ const _TrustedDevicesService = class _TrustedDevicesService {
   getAllDevices() {
     return this.getAll();
   }
+  getTrustedDevices() {
+    return this.getAll();
+  }
   getBySerial(serial) {
     var _a;
     if (!serial) return void 0;
+    const cleanSerial = serial.trim();
+    if (!cleanSerial) return void 0;
     for (const dev of this.trustedDevices.values()) {
-      if (dev.hardwareSerial === serial || dev.id === serial || dev.serialNumber === serial || dev.ipAddress === serial || ((_a = dev.availableTransports) == null ? void 0 : _a.some((t) => t.serial === serial))) {
+      if (dev.hardwareSerial && dev.hardwareSerial === cleanSerial || dev.id && dev.id === cleanSerial || dev.serialNumber && dev.serialNumber === cleanSerial || dev.ipAddress && dev.ipAddress === cleanSerial || ((_a = dev.availableTransports) == null ? void 0 : _a.some((t) => t.serial === cleanSerial))) {
         return dev;
       }
     }
-    return this.trustedDevices.get(serial);
+    return void 0;
   }
   saveDevice(device) {
     const key = this.getDeviceKey(device);
@@ -354,13 +359,39 @@ const _TrustedDevicesService = class _TrustedDevicesService {
     this.saveDevice(updated);
   }
   removeDevice(serial) {
-    const dev = this.getBySerial(serial);
-    if (dev) {
-      const key = this.getDeviceKey(dev);
-      this.trustedDevices.delete(key);
+    var _a;
+    if (!serial) return false;
+    const clean = serial.trim();
+    if (!clean) return false;
+    const beforeCount = this.trustedDevices.size;
+    logger.info(`[TrustedDevicesService] Before: ${beforeCount} trusted device(s)`, "TrustedDevicesService");
+    logger.info(`[TrustedDevicesService] Removing: ${clean}`, "TrustedDevicesService");
+    const targetDev = this.getBySerial(clean);
+    const keysToDelete = /* @__PURE__ */ new Set();
+    keysToDelete.add(clean);
+    for (const [key, dev] of this.trustedDevices.entries()) {
+      const matchesDirectly = key === clean || dev.id === clean || dev.serialNumber === clean || dev.hardwareSerial === clean || dev.ipAddress && dev.ipAddress === clean || ((_a = dev.availableTransports) == null ? void 0 : _a.some((t) => t.serial === clean));
+      const matchesTargetDev = targetDev && (key === this.getDeviceKey(targetDev) || dev.id === targetDev.id || dev.hardwareSerial && targetDev.hardwareSerial && dev.hardwareSerial === targetDev.hardwareSerial || dev.serialNumber && targetDev.serialNumber && dev.serialNumber === targetDev.serialNumber || dev.model && targetDev.model && dev.model !== "Generic Device" && dev.model === targetDev.model && dev.manufacturer === targetDev.manufacturer);
+      if (matchesDirectly || matchesTargetDev) {
+        keysToDelete.add(key);
+        if (dev.id) keysToDelete.add(dev.id);
+        if (dev.serialNumber) keysToDelete.add(dev.serialNumber);
+        if (dev.hardwareSerial) keysToDelete.add(dev.hardwareSerial);
+      }
     }
-    this.trustedDevices.delete(serial);
-    this.saveToDisk();
+    for (const k of keysToDelete) {
+      this.trustedDevices.delete(k);
+    }
+    const afterCount = this.trustedDevices.size;
+    logger.info(`[TrustedDevicesService] After: ${afterCount} trusted device(s)`, "TrustedDevicesService");
+    const wasRemoved = beforeCount > afterCount;
+    if (wasRemoved) {
+      this.saveToDisk();
+      logger.info(`[TrustedDevicesService] Successfully removed device '${clean}' from persistent store`, "TrustedDevicesService");
+      return true;
+    }
+    logger.info(`[TrustedDevicesService] Device '${clean}' was not in trusted storage (already removed or not found)`, "TrustedDevicesService");
+    return false;
   }
 };
 __publicField(_TrustedDevicesService, "instance");
@@ -996,9 +1027,28 @@ const _ADBService = class _ADBService {
    */
   async disconnect(target) {
     try {
-      const args = target ? ["disconnect", target] : ["disconnect"];
-      const { stdout } = await this.execAdb(args);
-      const cleanStdout = stdout.trim();
+      if (target) {
+        this.staticInfoCache.delete(target);
+      } else {
+        this.staticInfoCache.clear();
+      }
+      this.cachedRawDevicesTimestamp = 0;
+      this.cachedRawDevicesList = [];
+      let cleanStdout = "";
+      const isUsb = target && !target.includes(":") && !target.includes(".");
+      if (isUsb) {
+        try {
+          const res = await this.execAdb(["reconnect", "device", target]);
+          cleanStdout = res.stdout.trim() || "USB transport reconnected";
+        } catch {
+          const res = await this.execAdb(["disconnect", target]).catch(() => ({ stdout: "" }));
+          cleanStdout = res.stdout ? res.stdout.trim() : `Disconnected ${target}`;
+        }
+      } else {
+        const args = target ? ["disconnect", target] : ["disconnect"];
+        const res = await this.execAdb(args);
+        cleanStdout = res.stdout.trim();
+      }
       logger.info(`adb disconnect ${target || "all"} result: ${cleanStdout}`, "ADBService");
       return {
         success: true,
@@ -1055,15 +1105,19 @@ const _ADBService = class _ADBService {
     if (!ip || !port || !pairingCode) {
       return { success: false, message: "IP, Port, and Pairing Code are all required." };
     }
+    const cleanCode = pairingCode.trim();
+    if (!/^\d{6}$/.test(cleanCode)) {
+      return { success: false, message: "Pairing code must be a 6-digit numeric code." };
+    }
     const adbPath = await this.getAdbExecutablePath();
     if (!adbPath) {
       return { success: false, message: "ADB executable not found." };
     }
-    const target = `${ip}:${port}`;
-    logger.info(`Starting adb pair ${target} with code ${pairingCode}`, "ADBService");
+    const target = `${ip.trim()}:${port}`;
+    logger.info(`Starting adb pair ${target} (pairing code length: ${cleanCode.length} digits)`, "ADBService");
     return new Promise((resolve) => {
       var _a, _b, _c;
-      const child = child_process.spawn(adbPath, ["pair", target, pairingCode], { timeout: 15e3 });
+      const child = child_process.spawn(adbPath, ["pair", target, cleanCode], { timeout: 15e3 });
       let output = "";
       let errorOutput = "";
       (_a = child.stdout) == null ? void 0 : _a.on("data", (data) => {
@@ -1076,15 +1130,13 @@ const _ADBService = class _ADBService {
         const stdoutStr = output.trim();
         const stderrStr = errorOutput.trim();
         logger.info(`adb pair exit code: ${code}`, "ADBService");
-        logger.info(`adb pair stdout: ${stdoutStr || "(none)"}`, "ADBService");
-        logger.info(`adb pair stderr: ${stderrStr || "(none)"}`, "ADBService");
         const fullOutput = (stdoutStr + "\n" + stderrStr).trim();
         const lowerOutput = fullOutput.toLowerCase();
         const isSuccess = code === 0 && (lowerOutput.includes("successfully paired") || lowerOutput.includes("paired to"));
         if (!isSuccess) {
-          logger.error(`adb pair failed: ${fullOutput || `Exited with code ${code}`}`, "ADBService");
+          logger.error(`adb pair failed for ${target}: ${fullOutput || `Exited with code ${code}`}`, "ADBService");
         } else {
-          logger.info(`adb pair successful: ${fullOutput}`, "ADBService");
+          logger.info(`adb pair successful for ${target}: ${stdoutStr}`, "ADBService");
         }
         resolve({
           success: isSuccess,
@@ -1092,7 +1144,7 @@ const _ADBService = class _ADBService {
         });
       });
       try {
-        (_c = child.stdin) == null ? void 0 : _c.write(`${pairingCode}
+        (_c = child.stdin) == null ? void 0 : _c.write(`${cleanCode}
 `);
       } catch {
       }
@@ -1173,6 +1225,45 @@ const _ADBService = class _ADBService {
     }
   }
   /**
+   * System mDNS / Avahi service discovery fallback for Android Wireless Debugging
+   */
+  async discoverSystemMdnsServices() {
+    const services = [];
+    try {
+      const resTls = await execFileAsync("avahi-browse", ["-r", "-t", "-p", "_adb-tls-connect._tcp"], { timeout: 3e3 }).catch(() => ({ stdout: "" }));
+      for (const line of resTls.stdout.split(/\r?\n/)) {
+        if (line.startsWith("=")) {
+          const parts = line.split(";");
+          if (parts.length >= 9) {
+            const ip = parts[7];
+            const port = parseInt(parts[8], 10);
+            const name = parts[3];
+            if (ip && port > 1024 && port <= 65535 && !services.some((s) => s.ip === ip && s.port === port)) {
+              services.push({ ip, port, name, type: "_adb-tls-connect._tcp" });
+            }
+          }
+        }
+      }
+      const resAdb = await execFileAsync("avahi-browse", ["-r", "-t", "-p", "_adb._tcp"], { timeout: 3e3 }).catch(() => ({ stdout: "" }));
+      for (const line of resAdb.stdout.split(/\r?\n/)) {
+        if (line.startsWith("=")) {
+          const parts = line.split(";");
+          if (parts.length >= 9) {
+            const ip = parts[7];
+            const port = parseInt(parts[8], 10);
+            const name = parts[3];
+            if (ip && port > 1024 && port <= 65535 && !services.some((s) => s.ip === ip)) {
+              services.push({ ip, port, name, type: "_adb._tcp" });
+            }
+          }
+        }
+      }
+      return { success: services.length > 0, services };
+    } catch {
+      return { success: false, services: [] };
+    }
+  }
+  /**
    * Resolve and verify active ADB serial prior to executing device operations.
    * If requestedSerial is disconnected or stale, auto-remaps to an online device by hardwareSerial/IP/model.
    */
@@ -1226,7 +1317,7 @@ const _ADBService = class _ADBService {
 __publicField(_ADBService, "instance");
 let ADBService = _ADBService;
 const adbService = ADBService.getInstance();
-let ElectronUtils$1 = class ElectronUtils2 {
+class ElectronUtils {
   /**
    * Send an IPC event to all open renderer windows
    */
@@ -1257,7 +1348,7 @@ let ElectronUtils$1 = class ElectronUtils2 {
       logger.warn("Failed displaying desktop notification", "ElectronUtils", err);
     }
   }
-};
+}
 const _DeviceDiscoveryService = class _DeviceDiscoveryService {
   constructor() {
     __publicField(this, "discoveryInterval", null);
@@ -1273,6 +1364,7 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
     __publicField(this, "isDiscoveryActive", false);
     __publicField(this, "currentAttempt", 0);
     __publicField(this, "maxAttempts", 5);
+    __publicField(this, "manualDisconnectSuppression", /* @__PURE__ */ new Set());
     __publicField(this, "lastRawSerialsKey", "");
   }
   static getInstance() {
@@ -1305,9 +1397,38 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       }
       trustedDevicesService.saveDevice(dev);
       logger.info(`Set preferred transport for ${dev.deviceName} to ${transport.toUpperCase()} (${dev.serialNumber})`, "DeviceDiscoveryService");
-      ElectronUtils$1.sendToRenderer("device:list-updated", this.cachedDevices);
+      ElectronUtils.sendToRenderer("device:list-updated", this.cachedDevices);
     }
     return this.cachedDevices;
+  }
+  suppressDevice(target, hardwareSerial) {
+    if (!target) return;
+    const cleanTarget = target.trim();
+    this.manualDisconnectSuppression.add(cleanTarget);
+    if (hardwareSerial) this.manualDisconnectSuppression.add(hardwareSerial.trim());
+    const ip = cleanTarget.includes(":") ? cleanTarget.split(":")[0] : cleanTarget;
+    if (ip) this.manualDisconnectSuppression.add(ip);
+    logger.info(`[DISCONNECT] Suppressed ${cleanTarget} from active polling and target hydration`, "DeviceDiscoveryService");
+  }
+  clearSuppression(target, hardwareSerial) {
+    if (!target) {
+      this.manualDisconnectSuppression.clear();
+      return;
+    }
+    const cleanTarget = target.trim();
+    this.manualDisconnectSuppression.delete(cleanTarget);
+    if (hardwareSerial) this.manualDisconnectSuppression.delete(hardwareSerial.trim());
+    const ip = cleanTarget.includes(":") ? cleanTarget.split(":")[0] : cleanTarget;
+    if (ip) this.manualDisconnectSuppression.delete(ip);
+    logger.info(`[RECONNECT] Cleared suppression for ${cleanTarget}`, "DeviceDiscoveryService");
+  }
+  isSuppressed(target, hardwareSerial) {
+    if (!target) return false;
+    const cleanTarget = target.trim();
+    if (this.manualDisconnectSuppression.has(cleanTarget)) return true;
+    if (hardwareSerial && this.manualDisconnectSuppression.has(hardwareSerial.trim())) return true;
+    const ip = cleanTarget.includes(":") ? cleanTarget.split(":")[0] : cleanTarget;
+    return Boolean(ip && this.manualDisconnectSuppression.has(ip));
   }
   /**
    * Run ONE bounded event-driven discovery session with max 5 retries and exponential backoff.
@@ -1345,10 +1466,14 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       }
       for (const dev of wirelessTrusted) {
         if (!dev.ipAddress) continue;
+        if (this.isSuppressed(dev.ipAddress) || this.isSuppressed(dev.serialNumber)) {
+          logger.info(`Skipping auto connect for ${dev.ipAddress} — device is manually suppressed after explicit user disconnect`, "DeviceDiscoveryService");
+          continue;
+        }
         try {
           const connRes = await adbService.connectWireless(dev.ipAddress, dev.port || 5555);
           if (connRes.success) {
-            const reScanned = await this.scanDevices();
+            const reScanned = await this.scanDevices(true);
             if (reScanned.some((d) => d.status === "online")) {
               this.isDiscoveryActive = false;
               if (onProgress) onProgress(attempt, this.maxAttempts, "Connected");
@@ -1417,7 +1542,7 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       try {
         await adbService.killServer();
         await adbService.startServer();
-        ElectronUtils$1.sendNotification("ADB Daemon Auto-Restart", "ADB server was restarted automatically to restore connectivity.");
+        ElectronUtils.sendNotification("ADB Daemon Auto-Restart", "ADB server was restarted automatically to restore connectivity.");
       } catch (err) {
         logger.error("Failed auto-restarting ADB server", "DeviceDiscoveryService", err);
       }
@@ -1467,8 +1592,11 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
     if (this.isScanning) return this.cachedDevices;
     this.isScanning = true;
     try {
-      const rawList = await adbService.listRawDevices();
+      const rawList = await adbService.listRawDevices(forceRefresh);
       this.adbFailCount = 0;
+      if (forceRefresh) {
+        this.lastRawSerialsKey = "";
+      }
       if (!forceRefresh && !this.hasRawSerialsChanged(rawList) && this.cachedDevices.length > 0) {
         logger.debug("[Polling] Device discovery (10s) — raw serials unchanged, using cache", "DeviceDiscoveryService");
         this.isScanning = false;
@@ -1480,11 +1608,19 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       const currentActiveSerials = /* @__PURE__ */ new Set();
       for (const item of rawList) {
         currentActiveSerials.add(item.serial);
+        const isDisconnected = this.isSuppressed(item.serial);
         let status = "unknown";
-        if (item.rawStatus === "device") status = "online";
-        else if (item.rawStatus === "unauthorized") status = "unauthorized";
-        else if (item.rawStatus === "offline") status = "offline";
-        else if (item.rawStatus === "connecting") status = "connecting";
+        if (isDisconnected) {
+          status = "offline";
+        } else if (item.rawStatus === "device") {
+          status = "online";
+        } else if (item.rawStatus === "unauthorized") {
+          status = "unauthorized";
+        } else if (item.rawStatus === "offline") {
+          status = "offline";
+        } else if (item.rawStatus === "connecting") {
+          status = "connecting";
+        }
         const detailedSpecs = await adbService.fetchDetailedDeviceSpecs(item.serial, status, item.connectionType);
         if (item.connectionType === "usb" && status === "online") {
           this.autoConfigureWirelessForUsbDevice(item.serial, detailedSpecs).catch(() => {
@@ -1505,7 +1641,7 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       }
       const groupedSpecsMap = /* @__PURE__ */ new Map();
       for (const dev of currentDevices) {
-        const groupKey = dev.hardwareSerial || (dev.model && dev.model !== "Generic Device" ? `${dev.manufacturer}_${dev.model}` : dev.serialNumber);
+        const groupKey = dev.hardwareSerial || dev.serialNumber;
         if (!groupedSpecsMap.has(groupKey)) {
           groupedSpecsMap.set(groupKey, []);
         }
@@ -1533,37 +1669,36 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
           }
         }
         const trustedMatch = trustedList.find(
-          (t) => t.hardwareSerial === groupKey || t.id === primarySpec.id || t.model === primarySpec.model && t.manufacturer === primarySpec.manufacturer
+          (t) => t.hardwareSerial === groupKey || t.serialNumber === groupKey || t.id === primarySpec.id
         );
-        if (trustedMatch && trustedMatch.ipAddress) {
+        if (trustedMatch && trustedMatch.connectionType === "wireless" && trustedMatch.ipAddress && trustedMatch.port) {
           const hasWireless = transports.some((t) => t.type === "wireless");
           if (!hasWireless) {
             transports.push({
               type: "wireless",
-              serial: `${trustedMatch.ipAddress}:${trustedMatch.port || 5555}`,
+              serial: `${trustedMatch.ipAddress}:${trustedMatch.port}`,
               status: "offline",
               ipAddress: trustedMatch.ipAddress,
-              port: trustedMatch.port || 5555
+              port: trustedMatch.port
             });
           }
         }
         const savedPref = this.preferredTransportMap.get(groupKey) || (trustedMatch == null ? void 0 : trustedMatch.preferredTransport);
-        let chosenPref = "usb";
         const onlineWireless = transports.find((t) => t.type === "wireless" && t.status === "online");
         const onlineUsb = transports.find((t) => t.type === "usb" && t.status === "online");
-        if (savedPref && transports.some((t) => t.type === savedPref)) {
+        let chosenPref = "usb";
+        if (savedPref && transports.some((t) => t.type === savedPref && t.status === "online")) {
           chosenPref = savedPref;
-        } else if (this.enableAutoWirelessReconnect && onlineWireless && onlineUsb) {
+        } else if (onlineWireless) {
           chosenPref = "wireless";
         } else if (onlineUsb) {
           chosenPref = "usb";
-        } else if (onlineWireless) {
-          chosenPref = "wireless";
         } else {
           chosenPref = transports[0].type;
         }
         const activeTransport = transports.find((t) => t.type === chosenPref) || transports[0];
         const overallStatus = transports.some((t) => t.status === "online") ? "online" : transports.some((t) => t.status === "unauthorized") ? "unauthorized" : "offline";
+        const isTrustedDevice = Boolean(trustedMatch && trustedMatch.isTrusted);
         const unifiedDevice = {
           ...primarySpec,
           id: primarySpec.id || `dev_${groupKey.replace(/[^a-zA-Z0-9]/g, "_")}`,
@@ -1573,10 +1708,13 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
           ipAddress: activeTransport.ipAddress || primarySpec.ipAddress || (trustedMatch == null ? void 0 : trustedMatch.ipAddress) || "",
           port: activeTransport.port || primarySpec.port || 5555,
           status: overallStatus,
+          isTrusted: isTrustedDevice,
           availableTransports: transports,
           preferredTransport: chosenPref
         };
-        trustedDevicesService.saveDevice(unifiedDevice);
+        if (isTrustedDevice) {
+          trustedDevicesService.saveDevice(unifiedDevice);
+        }
         deduplicatedDevices.push(unifiedDevice);
       }
       for (const serial of currentActiveSerials) {
@@ -1586,7 +1724,7 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
             return d.serialNumber === serial || d.hardwareSerial === serial || ((_a = d.availableTransports) == null ? void 0 : _a.some((t) => t.serial === serial));
           });
           if (dev) {
-            ElectronUtils$1.sendNotification(
+            ElectronUtils.sendNotification(
               "Device Connected",
               `${dev.deviceName} (${dev.manufacturer} ${dev.model}) connected`
             );
@@ -1600,11 +1738,13 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
       this.cachedDevices = deduplicatedDevices;
       if (hasChanged && isDebounced) {
         this.lastEmitTimestamp = now;
+        const onlineCount = deduplicatedDevices.filter((d) => d.status === "online").length;
+        const offlineCount = deduplicatedDevices.filter((d) => d.status === "offline").length;
         logger.info(
-          `[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${deduplicatedDevices.length} unified devices, Online: ${deduplicatedDevices.filter((d) => d.status === "online").length})`,
+          `[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${onlineCount} online device(s), ${offlineCount} offline/history device(s))`,
           "DeviceDiscoveryService"
         );
-        ElectronUtils$1.sendToRenderer("device:list-updated", deduplicatedDevices);
+        ElectronUtils.sendToRenderer("device:list-updated", deduplicatedDevices);
       }
       return deduplicatedDevices;
     } catch (err) {
@@ -1616,6 +1756,9 @@ const _DeviceDiscoveryService = class _DeviceDiscoveryService {
   }
   getCachedDevices() {
     return this.cachedDevices.length > 0 ? this.cachedDevices : trustedDevicesService.getAll();
+  }
+  getOnlineDevices() {
+    return this.cachedDevices.filter((d) => d.status === "online");
   }
 };
 __publicField(_DeviceDiscoveryService, "instance");
@@ -1720,6 +1863,9 @@ const _WirelessPairingService = class _WirelessPairingService extends events.Eve
         hostIp,
         port: actualPort,
         expiresInSeconds: 60,
+        pairingStatus: "pairing",
+        connectionStatus: "disconnected",
+        portDiscoveryStatus: "idle",
         status: "WAITING"
       };
       logger.info(`QR generated: ${qrPayload} (Bound Port: ${actualPort})`, "WirelessPairingService");
@@ -1773,148 +1919,280 @@ const _WirelessPairingService = class _WirelessPairingService extends events.Eve
     });
   }
   /**
-   * Retrieve paired ADB connection endpoint and execute adb connect <host>:<adb-port>
-   * Official mechanism: Queries `adb mdns services` or `adb devices -l` to obtain the exact active Wireless Debugging endpoint exposed by Android.
-   * No port guessing or brute-force scanning.
+   * Post-pairing verification & endpoint resolution flow.
+   * Pairing success and port discovery are two separate operations.
    */
-  async connectAndVerifyPairedEndpoint(clientIp) {
+  async connectAndVerifyPairedEndpoint(clientIp, pairingPort) {
+    var _a;
     if (this.currentSession) {
-      this.currentSession.status = "CONNECTING";
+      this.currentSession.pairingStatus = "paired";
+      this.currentSession.connectionStatus = "connecting";
+      this.currentSession.portDiscoveryStatus = "discovering";
       this.emit("pairing:status", this.currentSession);
     }
-    logger.info("adb pair successful", "WirelessPairingService");
-    logger.info("Retrieving wireless endpoint...", "WirelessPairingService");
+    const effectivePairingPort = pairingPort || ((_a = this.currentSession) == null ? void 0 : _a.port) || 0;
+    logger.info(
+      `[Wireless Pairing]
+Pairing IP: ${clientIp}
+Pairing port: ${effectivePairingPort || "N/A"}
+Pairing result: SUCCESS`,
+      "WirelessPairingService"
+    );
+    const rawDevs = await adbService.listRawDevices(true);
+    const rawDevListStr = rawDevs.map((d) => `${d.serial}	${d.rawStatus}	(${d.connectionType})`).join("\n");
+    logger.info(
+      `[Wireless Connection]
+Fresh adb devices result:
+${rawDevListStr || "No active devices listed"}`,
+      "WirelessPairingService"
+    );
+    const usbDev = rawDevs.find((d) => d.connectionType === "usb" && (d.rawStatus === "device" || d.rawStatus === "online"));
+    if (usbDev) {
+      logger.info(`Detected USB device:
+${usbDev.serial}`, "WirelessPairingService");
+    }
+    const onlineWirelessDev = rawDevs.find(
+      (d) => d.connectionType === "wireless" && (d.rawStatus === "device" || d.rawStatus === "online") && (d.serial.includes(clientIp) || d.serial === clientIp)
+    );
+    if (onlineWirelessDev) {
+      const connSerial = onlineWirelessDev.serial;
+      const connIp = connSerial.includes(":") ? connSerial.split(":")[0] : clientIp;
+      const connPort = connSerial.includes(":") ? parseInt(connSerial.split(":")[1], 10) : 5555;
+      logger.info(
+        `[Wireless Connection]
+Detected connected device: ${connSerial}
+Connection type: wireless
+Connection IP: ${connIp}
+Connection port: ${connPort}`,
+        "WirelessPairingService"
+      );
+      logger.info(
+        `[Port Discovery]
+Discovery method: already_connected
+Discovered connection port: ${connPort}
+Discovery result: FOUND`,
+        "WirelessPairingService"
+      );
+      if (this.currentSession) {
+        this.currentSession.pairingStatus = "paired";
+        this.currentSession.connectionStatus = "connected";
+        this.currentSession.portDiscoveryStatus = "idle";
+        this.currentSession.connectedSerial = connSerial;
+        this.currentSession.status = "CONNECTED";
+        this.emit("pairing:status", this.currentSession);
+      }
+      trustedDevicesService.addDevice({
+        serialNumber: connSerial,
+        deviceName: "Android Device",
+        model: "Android Device",
+        ipAddress: connIp,
+        port: connPort,
+        connectionType: "wireless",
+        lastConnected: Date.now()
+      });
+      return {
+        success: true,
+        pairingStatus: "paired",
+        connectionStatus: "connected",
+        portDiscoveryStatus: "idle",
+        message: "Wireless connection successful.",
+        device: {
+          serialNumber: connSerial,
+          deviceName: "Android Device",
+          model: "Android Device",
+          connectionType: "wireless",
+          ipAddress: connIp,
+          port: connPort,
+          status: "online"
+        }
+      };
+    }
+    logger.info(
+      `Wireless state for ${clientIp}:
+paired but not connected
+
+Wireless connection port:
+NOT YET KNOWN
+
+Discovery:
+REQUIRED`,
+      "WirelessPairingService"
+    );
     let resolvedEndpoint = null;
+    let discoveryMethod = "none";
+    const findMdnsPort = (mdnsStdout) => {
+      const lines = mdnsStdout.split(/\r?\n/);
+      for (const line of lines) {
+        if (line.includes("_adb-tls-connect") || line.includes("_adb._tcp")) {
+          const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
+          if (match) {
+            const matchedIp = match[1];
+            const matchedPort = parseInt(match[2], 10);
+            if ((!clientIp || matchedIp === clientIp) && matchedPort !== effectivePairingPort) {
+              return matchedPort;
+            }
+          }
+        }
+      }
+      return null;
+    };
     try {
       const mdnsRes = await adbService.getMdnsServices();
       if (mdnsRes.success && mdnsRes.message) {
-        const lines = mdnsRes.message.split(/\r?\n/);
-        for (const line of lines) {
-          if (line.includes("_adb-tls-connect") || line.includes("_adb._tcp")) {
-            const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
-            if (match) {
-              const matchedIp = match[1];
-              const matchedPort = parseInt(match[2], 10);
-              if (!clientIp || matchedIp === clientIp) {
-                resolvedEndpoint = { ip: matchedIp, port: matchedPort };
-                break;
-              }
-            }
-          }
+        const port = findMdnsPort(mdnsRes.message);
+        if (port) {
+          resolvedEndpoint = { ip: clientIp, port };
+          discoveryMethod = "mdns";
         }
       }
     } catch {
     }
     if (!resolvedEndpoint) {
-      const rawDevs2 = await adbService.listRawDevices();
-      const wirelessDev = rawDevs2.find((d) => d.connectionType === "wireless" && (d.rawStatus === "device" || d.rawStatus === "online"));
-      if (wirelessDev) {
-        const parts = wirelessDev.serial.split(":");
-        if (parts.length === 2) {
-          resolvedEndpoint = { ip: parts[0], port: parseInt(parts[1], 10) };
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      try {
+        const mdnsRes = await adbService.getMdnsServices();
+        if (mdnsRes.success && mdnsRes.message) {
+          const port = findMdnsPort(mdnsRes.message);
+          if (port) {
+            resolvedEndpoint = { ip: clientIp, port };
+            discoveryMethod = "mdns_retry";
+          }
         }
-      }
-    }
-    if (!resolvedEndpoint && clientIp) {
-      if (typeof trustedDevicesService.getAllDevices !== "function") {
-        throw new Error("TrustedDevicesService does not implement getAllDevices()");
-      }
-      logger.info("Loading trusted devices...", "WirelessPairingService");
-      const trustedList = trustedDevicesService.getAllDevices();
-      logger.info(`Loaded ${trustedList.length} trusted devices.`, "WirelessPairingService");
-      logger.info("Searching for paired endpoint...", "WirelessPairingService");
-      const trusted = trustedList.find((d) => d.ipAddress === clientIp || d.serialNumber.includes(clientIp));
-      if (trusted && trusted.port) {
-        resolvedEndpoint = { ip: trusted.ipAddress || clientIp, port: trusted.port };
+      } catch {
       }
     }
     if (!resolvedEndpoint) {
-      logger.error(`Could not determine Wireless Debugging connection endpoint for ${clientIp}`, "WirelessPairingService");
-      const errorMsg = 'Pairing succeeded, but unable to automatically resolve the Wireless Debugging port. Please enter the Wireless Debugging "IP address & port" shown on your phone screen.';
-      if (this.currentSession) {
-        this.currentSession.status = "FAILED";
-        this.currentSession.errorMessage = errorMsg;
-        this.emit("pairing:status", this.currentSession);
+      try {
+        const sysMdns = await adbService.discoverSystemMdnsServices();
+        if (sysMdns.success && sysMdns.services.length > 0) {
+          const match = sysMdns.services.find((s) => s.ip === clientIp && s.port !== effectivePairingPort);
+          if (match) {
+            resolvedEndpoint = { ip: clientIp, port: match.port };
+            discoveryMethod = "system_mdns_avahi";
+          }
+        }
+      } catch {
       }
-      return {
-        success: false,
-        message: errorMsg
-      };
     }
-    const endpointStr = `${resolvedEndpoint.ip}:${resolvedEndpoint.port}`;
-    logger.info(`Endpoint detected: ${endpointStr}`, "WirelessPairingService");
-    logger.info("adb connect...", "WirelessPairingService");
-    const connRes = await adbService.connectWireless(resolvedEndpoint.ip, resolvedEndpoint.port);
-    if (!connRes.success) {
-      logger.error(`adb connect failed for ${endpointStr}: ${connRes.message}`, "WirelessPairingService");
-      const failMsg = `Unable to connect to paired device at ${endpointStr}. Please enter the IP address and port from your Wireless Debugging screen.`;
+    if (!resolvedEndpoint && clientIp) {
+      try {
+        const trustedList = trustedDevicesService.getAll();
+        const trusted = trustedList.find((d) => d.ipAddress === clientIp || d.serialNumber.includes(clientIp));
+        if (trusted && trusted.port && trusted.port !== effectivePairingPort && trusted.port !== 5555) {
+          resolvedEndpoint = { ip: trusted.ipAddress || clientIp, port: trusted.port };
+          discoveryMethod = "trusted_store";
+        }
+      } catch {
+      }
+    }
+    logger.info(
+      `[Port Discovery]
+Discovery method: ${discoveryMethod}
+Discovered connection port: ${resolvedEndpoint ? resolvedEndpoint.port : "NONE"}
+Discovery result: ${resolvedEndpoint ? "FOUND" : "FAILED"}`,
+      "WirelessPairingService"
+    );
+    if (!resolvedEndpoint) {
+      const failMsg = "Pairing succeeded, but the Wireless Debugging connection port could not be discovered.";
       if (this.currentSession) {
-        this.currentSession.status = "FAILED";
+        this.currentSession.pairingStatus = "paired";
+        this.currentSession.connectionStatus = "disconnected";
+        this.currentSession.portDiscoveryStatus = "failed";
+        this.currentSession.discoveredIp = clientIp;
+        this.currentSession.status = "PAIRED_PORT_FAILED";
         this.currentSession.errorMessage = failMsg;
         this.emit("pairing:status", this.currentSession);
       }
       return {
-        success: false,
+        success: true,
+        // Pairing itself IS successful!
+        pairingStatus: "paired",
+        connectionStatus: "disconnected",
+        portDiscoveryStatus: "failed",
         message: failMsg
       };
     }
-    logger.info("connected", "WirelessPairingService");
-    logger.info("adb devices", "WirelessPairingService");
-    const rawDevs = await adbService.listRawDevices();
-    const matched = rawDevs.find((d) => d.serial === endpointStr || d.serial.includes(resolvedEndpoint.ip));
-    if (!matched || matched.rawStatus !== "device" && matched.rawStatus !== "online") {
-      logger.error(`Device state verification failed for ${endpointStr}: ${(matched == null ? void 0 : matched.rawStatus) || "not found"}`, "WirelessPairingService");
+    const endpointStr = `${resolvedEndpoint.ip}:${resolvedEndpoint.port}`;
+    logger.info(
+      `Discovered wireless connection:
+${endpointStr}
+
+Executing:
+adb connect ${endpointStr}`,
+      "WirelessPairingService"
+    );
+    const connRes = await adbService.connectWireless(resolvedEndpoint.ip, resolvedEndpoint.port);
+    const postConnectRaw = await adbService.listRawDevices(true);
+    const isNowOnline = postConnectRaw.some(
+      (d) => (d.serial === endpointStr || d.serial.includes(resolvedEndpoint.ip)) && d.connectionType === "wireless" && (d.rawStatus === "device" || d.rawStatus === "online")
+    );
+    logger.info(
+      `[Wireless Connection]
+Fresh adb devices result:
+${postConnectRaw.map((d) => `${d.serial}	${d.rawStatus}	(${d.connectionType})`).join("\n")}`,
+      "WirelessPairingService"
+    );
+    if (connRes.success && isNowOnline) {
+      logger.info(`Wireless connection: SUCCESS for ${endpointStr}`, "WirelessPairingService");
+      const wirelessSpecs = await adbService.fetchDetailedDeviceSpecs(endpointStr, "online", "wireless");
       if (this.currentSession) {
-        this.currentSession.status = "FAILED";
-        this.currentSession.errorMessage = `Device state verification failed (${(matched == null ? void 0 : matched.rawStatus) || "unauthorized"}).`;
+        this.currentSession.pairingStatus = "paired";
+        this.currentSession.connectionStatus = "connected";
+        this.currentSession.portDiscoveryStatus = "found";
+        this.currentSession.connectedSerial = endpointStr;
+        this.currentSession.status = "CONNECTED";
         this.emit("pairing:status", this.currentSession);
       }
-      return {
-        success: false,
-        message: `Device verification failed.`
-      };
-    }
-    logger.info("Device verified", "WirelessPairingService");
-    try {
-      const connectedDevices = await adbService.getConnectedDevices();
-      const devDetails = connectedDevices.find((d) => d.serialNumber === endpointStr || d.ipAddress === resolvedEndpoint.ip);
-      const deviceModel = (devDetails == null ? void 0 : devDetails.model) || "Android Phone";
-      const deviceName = (devDetails == null ? void 0 : devDetails.deviceName) || (devDetails == null ? void 0 : devDetails.model) || "Android Device";
-      const androidVersion = (devDetails == null ? void 0 : devDetails.androidVersion) || "11+";
       trustedDevicesService.addDevice({
         serialNumber: endpointStr,
-        deviceName,
-        model: deviceModel,
+        deviceName: wirelessSpecs.deviceName || wirelessSpecs.model || "Wireless Android Device",
+        model: wirelessSpecs.model || "Android Phone",
+        manufacturer: wirelessSpecs.manufacturer || "Android",
+        hardwareSerial: wirelessSpecs.hardwareSerial || endpointStr,
         ipAddress: resolvedEndpoint.ip,
         port: resolvedEndpoint.port,
         connectionType: "wireless",
         lastConnected: Date.now()
       });
-      logger.info(`Trusted device saved: ${deviceName} (${endpointStr})`, "WirelessPairingService");
-      logger.info("Setup complete", "WirelessPairingService");
-      this.currentSession.status = "CONNECTED";
-      this.emit("pairing:status", this.currentSession);
-      this.emit("pairing:completed", {
+      return {
         success: true,
+        pairingStatus: "paired",
+        connectionStatus: "connected",
+        portDiscoveryStatus: "found",
+        message: "Wireless connection successful.",
         device: {
-          serialNumber: connectedTarget,
-          deviceName,
-          model: deviceModel,
-          androidVersion,
-          ipAddress: clientIp,
+          serialNumber: endpointStr,
+          deviceName: wirelessSpecs.deviceName || wirelessSpecs.model || "Wireless Android Device",
+          model: wirelessSpecs.model || "Android Phone",
+          manufacturer: wirelessSpecs.manufacturer || "Android",
+          hardwareSerial: wirelessSpecs.hardwareSerial || endpointStr,
+          connectionType: "wireless",
+          ipAddress: resolvedEndpoint.ip,
+          port: resolvedEndpoint.port,
           status: "online"
         }
-      });
-      this.cancelQrPairing(false);
-      return { success: true };
-    } catch (err) {
-      logger.error(`Failed registering device: ${err.message}`, "WirelessPairingService", err);
+      };
+    } else {
+      logger.error(`Wireless connection failed for ${endpointStr}`, "WirelessPairingService");
+      const failMsg = "Pairing succeeded, but the Wireless Debugging connection could not be established.";
       if (this.currentSession) {
-        this.currentSession.status = "FAILED";
-        this.currentSession.errorMessage = `Failed registering device: ${err.message}`;
+        this.currentSession.pairingStatus = "paired";
+        this.currentSession.connectionStatus = "disconnected";
+        this.currentSession.portDiscoveryStatus = "failed";
+        this.currentSession.discoveredIp = resolvedEndpoint.ip;
+        this.currentSession.discoveredPort = resolvedEndpoint.port;
+        this.currentSession.status = "PAIRED_PORT_FAILED";
+        this.currentSession.errorMessage = failMsg;
         this.emit("pairing:status", this.currentSession);
       }
-      return { success: false, message: `Failed registering device: ${err.message}` };
+      return {
+        success: true,
+        // Pairing itself IS successful!
+        pairingStatus: "paired",
+        connectionStatus: "disconnected",
+        portDiscoveryStatus: "failed",
+        message: failMsg
+      };
     }
   }
   /**
@@ -1976,33 +2254,168 @@ function registerDeviceHandlers() {
     const res = await deviceDiscoveryService.startBoundedDiscoverySession(void 0, true);
     return res.devices;
   });
+  electron.ipcMain.handle("device:add-trusted", async (_event, payload) => {
+    try {
+      if (payload && payload.serialNumber) {
+        trustedDevicesService.addDevice({
+          serialNumber: payload.serialNumber,
+          deviceName: payload.deviceName || "Android Device",
+          model: payload.model || "Android Device",
+          connectionType: payload.connectionType || "wireless",
+          ipAddress: payload.ipAddress,
+          port: payload.port,
+          lastConnected: payload.lastConnected || Date.now()
+        });
+      }
+      return { success: true };
+    } catch (err) {
+      logger.error("Error adding trusted device", "DeviceHandler", err);
+      return { success: false, message: err.message };
+    }
+  });
   electron.ipcMain.handle("device:forget-trusted", async (_event, serial) => {
-    trustedDevicesService.removeDevice(serial);
+    logger.info(`[MAIN] Forget requested: ${serial}`, "DeviceHandler");
+    const cachedDevs = deviceDiscoveryService.getCachedDevices();
+    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+    const targetName = (dev == null ? void 0 : dev.deviceName) || (dev == null ? void 0 : dev.model) || serial;
+    if (dev == null ? void 0 : dev.availableTransports) {
+      for (const t of dev.availableTransports) {
+        if (t.type === "wireless" || t.serial.includes(":")) {
+          await adbService.disconnect(t.serial);
+        }
+      }
+    } else if (serial.includes(":")) {
+      await adbService.disconnect(serial);
+    }
+    adbService.invalidateStaticDeviceCache(serial);
+    if (dev == null ? void 0 : dev.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
+    deviceDiscoveryService.suppressDevice(serial, dev == null ? void 0 : dev.hardwareSerial);
+    const wasRemoved = trustedDevicesService.removeDevice(serial);
     const updated = await deviceDiscoveryService.scanDevices(true);
     ElectronUtils.sendToRenderer("device:list-updated", updated);
-    return updated;
+    logger.info(`[MAIN] Forget result: success for ${targetName}`, "DeviceHandler");
+    return { success: true, wasRemoved, deviceName: targetName, devices: updated };
+  });
+  electron.ipcMain.handle("device:forget", async (_event, serial) => {
+    logger.info(`[MAIN] Forget requested: ${serial}`, "DeviceHandler");
+    const cachedDevs = deviceDiscoveryService.getCachedDevices();
+    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+    const targetName = (dev == null ? void 0 : dev.deviceName) || (dev == null ? void 0 : dev.model) || serial;
+    if (dev == null ? void 0 : dev.availableTransports) {
+      for (const t of dev.availableTransports) {
+        if (t.type === "wireless" || t.serial.includes(":")) {
+          await adbService.disconnect(t.serial);
+        }
+      }
+    } else if (serial.includes(":")) {
+      await adbService.disconnect(serial);
+    }
+    adbService.invalidateStaticDeviceCache(serial);
+    if (dev == null ? void 0 : dev.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
+    deviceDiscoveryService.suppressDevice(serial, dev == null ? void 0 : dev.hardwareSerial);
+    const wasRemoved = trustedDevicesService.removeDevice(serial);
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
+    logger.info(`[MAIN] Forget result: success for ${targetName}`, "DeviceHandler");
+    return { success: true, wasRemoved, deviceName: targetName, devices: updated };
+  });
+  electron.ipcMain.handle("device:list-trusted", async () => {
+    try {
+      return trustedDevicesService.getTrustedDevices();
+    } catch (err) {
+      logger.error("Error listing trusted devices", "DeviceHandler", err);
+      return [];
+    }
+  });
+  electron.ipcMain.handle("device:get-trusted", async () => {
+    try {
+      return trustedDevicesService.getTrustedDevices();
+    } catch (err) {
+      logger.error("Error listing trusted devices", "DeviceHandler", err);
+      return [];
+    }
   });
   electron.ipcMain.handle("device:set-preferred-transport", async (_event, payload) => {
     return deviceDiscoveryService.setPreferredTransport(payload.deviceId, payload.transport);
   });
   electron.ipcMain.handle("device:connect-wireless", async (_event, payload) => {
-    const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
-    deviceDiscoveryService.scanDevices();
-    return res;
+    const cleanIp = payload.ip.trim();
+    const cleanPort = payload.port || 5555;
+    const target = `${cleanIp}:${cleanPort}`;
+    logger.info(`[MAIN] device:connect-wireless received for ${target}`, "DeviceHandler");
+    deviceDiscoveryService.clearSuppression(target);
+    deviceDiscoveryService.clearSuppression(cleanIp);
+    if (payload.serial) deviceDiscoveryService.clearSuppression(payload.serial);
+    const res = await adbService.connectWireless(cleanIp, cleanPort);
+    const postRaw = await adbService.listRawDevices(true);
+    const isOnline = postRaw.some(
+      (d) => (d.serial === target || d.serial.includes(cleanIp)) && d.connectionType === "wireless" && (d.rawStatus === "device" || d.rawStatus === "online")
+    );
+    if (isOnline) {
+      const devSpecs = await adbService.fetchDetailedDeviceSpecs(target, "online", "wireless");
+      trustedDevicesService.addDevice({
+        serialNumber: target,
+        deviceName: devSpecs.deviceName || devSpecs.model || "Wireless Android Device",
+        model: devSpecs.model || "Android Phone",
+        manufacturer: devSpecs.manufacturer || "Android",
+        hardwareSerial: devSpecs.hardwareSerial || target,
+        ipAddress: cleanIp,
+        port: cleanPort,
+        connectionType: "wireless",
+        lastConnected: Date.now()
+      });
+      const updated = await deviceDiscoveryService.scanDevices(true);
+      ElectronUtils.sendToRenderer("device:list-updated", updated);
+      return { success: true, device: devSpecs, devices: updated };
+    } else {
+      return { success: false, message: res.message || `Failed connecting to ${target}` };
+    }
+  });
+  electron.ipcMain.handle("device:activate", async (_event, serial) => {
+    logger.info(`[MAIN] device:activate received for ${serial}`, "DeviceHandler");
+    deviceDiscoveryService.clearSuppression(serial);
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
+    return { success: true, devices: updated };
   });
   electron.ipcMain.handle("adb:connect", async (_event, payload) => {
+    logger.info(`[MAIN] adb:connect received for ${payload.ip}`, "DeviceHandler");
+    const target = `${payload.ip}:${payload.port || 5555}`;
+    deviceDiscoveryService.clearSuppression(target);
+    deviceDiscoveryService.clearSuppression(payload.ip);
     const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
     return res;
   });
+  electron.ipcMain.handle("wireless:discover-endpoint", async (_event, payload) => {
+    logger.info(`[MAIN] wireless:discover-endpoint for ${payload.ip}`, "DeviceHandler");
+    return wirelessPairingService.connectAndVerifyPairedEndpoint(payload.ip, payload.pairingPort);
+  });
   electron.ipcMain.handle("device:disconnect", async (_event, serial) => {
+    logger.info(`[MAIN] device:disconnect received for ${serial || "all"}`, "DeviceHandler");
+    if (serial) {
+      const dev = deviceDiscoveryService.getCachedDevices().find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+      deviceDiscoveryService.suppressDevice(serial, dev == null ? void 0 : dev.hardwareSerial);
+    } else {
+      deviceDiscoveryService.suppressDevice();
+    }
     const res = await adbService.disconnect(serial);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
     return res;
   });
   electron.ipcMain.handle("adb:disconnect", async (_event, serial) => {
+    logger.info(`[MAIN] adb:disconnect received for ${serial || "all"}`, "DeviceHandler");
+    if (serial) {
+      const dev = deviceDiscoveryService.getCachedDevices().find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
+      deviceDiscoveryService.suppressDevice(serial, dev == null ? void 0 : dev.hardwareSerial);
+    } else {
+      deviceDiscoveryService.suppressDevice();
+    }
     const res = await adbService.disconnect(serial);
-    deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
     return res;
   });
   electron.ipcMain.handle("adb:kill-server", async () => {
@@ -2012,40 +2425,44 @@ function registerDeviceHandlers() {
     return adbService.startServer();
   });
   electron.ipcMain.handle("adb:pair", async (_event, payload) => {
-    logger.info("adb pair started", "DeviceHandler");
-    logger.info(`IPC adb:pair requested for ${payload.ip}:${payload.port}`, "DeviceHandler");
-    const pairRes = await adbService.pairWireless(payload.ip, payload.port, payload.pairingCode);
+    const pairingIp = payload.ip;
+    const pairingPort = payload.port;
+    const pairingCode = payload.pairingCode;
+    logger.info(
+      `[Wireless Pairing]
+Pairing IP: ${pairingIp}
+Pairing port: ${pairingPort}`,
+      "DeviceHandler"
+    );
+    const pairRes = await adbService.pairWireless(pairingIp, pairingPort, pairingCode);
+    logger.info(
+      `[Wireless Pairing]
+Pairing IP: ${pairingIp}
+Pairing port: ${pairingPort}
+Pairing result: ${pairRes.success ? "SUCCESS" : "FAILED"}`,
+      "DeviceHandler"
+    );
     if (!pairRes.success) {
-      logger.error(`adb pair failed: ${pairRes.message}`, "DeviceHandler");
-      return pairRes;
-    }
-    logger.info("adb pair successful", "DeviceHandler");
-    const connRes = await wirelessPairingService.connectAndVerifyPairedEndpoint(payload.ip);
-    if (!connRes.success) {
-      logger.error(`adb connect failed: ${connRes.message}`, "DeviceHandler");
+      logger.error(`[Wireless Pairing] adb pair failed: ${pairRes.message}`, "DeviceHandler");
       return {
         success: false,
-        message: connRes.message || "Pairing succeeded, but unable to connect to Wireless Debugging endpoint. Please ensure Wireless Debugging is enabled on your phone and try connecting with the IP address and port."
+        pairingStatus: "failed",
+        connectionStatus: "disconnected",
+        portDiscoveryStatus: "idle",
+        message: pairRes.message || "Pairing failed. Please check pairing port and code."
       };
     }
-    logger.info("adb devices", "DeviceHandler");
-    const rawDevs = await adbService.listRawDevices();
-    logger.info(`adb devices returned ${rawDevs.length} devices`, "DeviceHandler");
-    const onlineDev = rawDevs.find((d) => d.rawStatus === "device" || d.rawStatus === "online");
-    if (!onlineDev) {
-      logger.warn('adb devices returned 0 connected devices in state "device"', "DeviceHandler");
-      return {
-        success: false,
-        message: 'Pairing succeeded, but no connected device was found in state "device". Please check Wireless Debugging on your phone.'
-      };
-    }
-    logger.info(`Found 1 connected device: ${onlineDev.serial}`, "DeviceHandler");
-    logger.info("Device verified", "DeviceHandler");
-    logger.info("Saving trusted device", "DeviceHandler");
-    logger.info("Setup complete", "DeviceHandler");
+    const connRes = await wirelessPairingService.connectAndVerifyPairedEndpoint(pairingIp, pairingPort);
+    deviceDiscoveryService.scanDevices(true).catch(() => {
+    });
     return {
       success: true,
-      message: "Device paired, connected, and verified successfully!"
+      // PAIRING ITSELF SUCCEEDED!
+      pairingStatus: "paired",
+      connectionStatus: connRes.connectionStatus,
+      portDiscoveryStatus: connRes.portDiscoveryStatus,
+      message: connRes.message || "Device paired successfully.",
+      device: connRes.device
     };
   });
   electron.ipcMain.handle("adb:mdns-services", async () => {
@@ -2087,8 +2504,29 @@ function registerDeviceHandlers() {
     return { success: true, message: `Sent keycode ${payload.keycode} to ${payload.serial}` };
   });
 }
+function parsePackageFlagsFromDumpsys(dumpsysOutput) {
+  const map = /* @__PURE__ */ new Map();
+  if (!dumpsysOutput) return map;
+  const blocks = dumpsysOutput.split(/Package\s+\[/);
+  for (const block of blocks) {
+    if (!block || !block.includes("]")) continue;
+    const endIdx = block.indexOf("]");
+    const packageName = block.substring(0, endIdx).trim();
+    if (!packageName || packageName.includes(" ")) continue;
+    const flagsMatch = block.match(/flags=\[\s*([^\]]*)\s*\]/i);
+    const flagsStr = flagsMatch ? flagsMatch[1].toUpperCase() : "";
+    const isSystem = flagsStr.includes("SYSTEM") || flagsStr.includes("UPDATED_SYSTEM_APP");
+    const verNameMatch = block.match(/versionName=([^\s\r\n]+)/i);
+    const versionName = verNameMatch ? verNameMatch[1] : "1.0.0";
+    const codePathMatch = block.match(/codePath=([^\s\r\n]+)/i);
+    const codePath = codePathMatch ? codePathMatch[1] : "";
+    map.set(packageName, { isSystem, versionName, codePath });
+  }
+  return map;
+}
 const _AppManagerService = class _AppManagerService {
   constructor() {
+    __publicField(this, "workingCommandCache", /* @__PURE__ */ new Map());
   }
   static getInstance() {
     if (!_AppManagerService.instance) {
@@ -2097,48 +2535,146 @@ const _AppManagerService = class _AppManagerService {
     return _AppManagerService.instance;
   }
   /**
-   * List installed Android applications via `adb shell pm list packages -f`
+   * List installed Android applications.
+   * Uses Android package flags (FLAG_SYSTEM, FLAG_UPDATED_SYSTEM_APP) for accurate classification.
    */
   async listApps(serial, filterType = "all") {
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) return [];
+    const pmFlags = ["-f"];
+    let stdout = "";
+    let lastError = "";
+    const cachedBase = this.workingCommandCache.get(activeSerial);
+    if (cachedBase) {
+      try {
+        const fullArgs = ["-s", activeSerial, ...cachedBase, ...pmFlags];
+        const res = await adbService.execAdb(fullArgs);
+        const out = (res.stdout || "").trim();
+        const count = (out.match(/^package:/gm) || []).length;
+        if (out.includes("package:") && count >= 5) {
+          stdout = out;
+        } else {
+          this.workingCommandCache.delete(activeSerial);
+        }
+      } catch {
+        this.workingCommandCache.delete(activeSerial);
+      }
+    }
+    if (!stdout) {
+      const candidateBases = [
+        { base: ["shell", "cmd", "package", "list", "packages", "--user", "0"], flags: pmFlags },
+        { base: ["shell", "pm", "list", "packages", "--user", "0"], flags: pmFlags },
+        { base: ["shell", "pm", "list", "packages", "-u", "0"], flags: pmFlags },
+        { base: ["shell", "cmd", "package", "list", "packages"], flags: [...pmFlags, "--user", "0"] },
+        { base: ["shell", "pm", "list", "packages"], flags: [...pmFlags, "--user", "0"] },
+        { base: ["shell", "cmd", "package", "list", "packages"], flags: pmFlags },
+        { base: ["shell", "pm", "list", "packages"], flags: pmFlags },
+        { base: ["shell", "pm", "list", "packages"], flags: [] }
+      ];
+      let bestOutput = "";
+      let maxPackagesFound = 0;
+      let bestBase = null;
+      for (const candidate of candidateBases) {
+        try {
+          const fullArgs = ["-s", activeSerial, ...candidate.base, ...candidate.flags];
+          const res = await adbService.execAdb(fullArgs);
+          const out = (res.stdout || "").trim();
+          const errStr = (res.stderr || "").trim();
+          if (out.includes("SecurityException") || out.includes("Permission") || errStr.includes("SecurityException") || errStr.includes("Permission")) {
+            lastError = errStr || out;
+            continue;
+          }
+          if (out.includes("package:")) {
+            const count = (out.match(/^package:/gm) || []).length;
+            if (count > maxPackagesFound) {
+              maxPackagesFound = count;
+              bestOutput = out;
+              bestBase = candidate.base;
+            }
+            if (count >= 15) {
+              break;
+            }
+          }
+        } catch (err) {
+          lastError = err.message || String(err);
+        }
+      }
+      if (bestOutput && bestBase) {
+        stdout = bestOutput;
+        this.workingCommandCache.set(activeSerial, bestBase);
+        logger.info(`Cached package list command for ${activeSerial} (${maxPackagesFound} packages found): ${bestBase.join(" ")}`, "AppManagerService");
+      }
+    }
+    let flagsMap = /* @__PURE__ */ new Map();
     try {
-      let pmFlag = "-f";
-      if (filterType === "user") pmFlag = "-f -3";
-      if (filterType === "system") pmFlag = "-f -s";
-      const args = ["-s", activeSerial, "shell", "pm", "list", "packages", pmFlag];
-      const { stdout } = await adbService.execAdb(args);
-      const lines = stdout.split(/\r?\n/);
-      const apps = [];
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("package:")) continue;
-        const clean = trimmed.replace("package:", "");
-        const lastEqual = clean.lastIndexOf("=");
-        if (lastEqual === -1) continue;
-        const apkPath = clean.substring(0, lastEqual);
-        const packageName = clean.substring(lastEqual + 1);
-        const isSystem = apkPath.startsWith("/system") || apkPath.startsWith("/vendor") || apkPath.startsWith("/product");
+      const res = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "package", "packages"]);
+      if (res.stdout && res.stdout.includes("Package [")) {
+        flagsMap = parsePackageFlagsFromDumpsys(res.stdout);
+      }
+    } catch {
+    }
+    if (!stdout && flagsMap.size > 0) {
+      const fallbackApps = [];
+      for (const [packageName, info] of flagsMap.entries()) {
+        if (filterType === "user" && info.isSystem) continue;
+        if (filterType === "system" && !info.isSystem) continue;
         const pkgParts = packageName.split(".");
         const rawName = pkgParts[pkgParts.length - 1] || packageName;
         const label = rawName.charAt(0).toUpperCase() + rawName.slice(1).replace(/_/g, " ");
-        apps.push({
+        fallbackApps.push({
           id: packageName,
           packageName,
           label,
-          apkPath,
-          isSystem,
-          versionName: "1.0.0",
+          apkPath: info.codePath,
+          isSystem: info.isSystem,
+          versionName: info.versionName,
           permissions: ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"]
         });
       }
-      apps.sort((a, b) => a.label.localeCompare(b.label));
-      logger.info(`Listed ${apps.length} installed apps (${filterType})`, "AppManagerService");
-      return apps;
-    } catch (err) {
-      logger.error("Error listing installed apps", "AppManagerService", err);
-      return [];
+      fallbackApps.sort((a, b) => a.label.localeCompare(b.label));
+      logger.info(`Extracted ${fallbackApps.length} packages via dumpsys flags for ${activeSerial}`, "AppManagerService");
+      return fallbackApps;
     }
+    if (!stdout && lastError) {
+      logger.error(`All package list commands failed for ${activeSerial}: ${lastError}`, "AppManagerService");
+      throw new Error(`Failed listing packages: ${lastError}`);
+    }
+    const lines = stdout.split(/\r?\n/);
+    const apps = [];
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed || !trimmed.startsWith("package:")) continue;
+      const clean = trimmed.replace("package:", "");
+      const lastEqual = clean.lastIndexOf("=");
+      let apkPath = "";
+      let packageName = "";
+      if (lastEqual === -1) {
+        packageName = clean;
+      } else {
+        apkPath = clean.substring(0, lastEqual);
+        packageName = clean.substring(lastEqual + 1);
+      }
+      const flagInfo = flagsMap.get(packageName);
+      const isSystem = flagInfo ? flagInfo.isSystem : apkPath.startsWith("/system") || apkPath.startsWith("/vendor") || apkPath.startsWith("/product") || apkPath.startsWith("/apex") || apkPath.startsWith("/system_ext");
+      if (filterType === "user" && isSystem) continue;
+      if (filterType === "system" && !isSystem) continue;
+      const pkgParts = packageName.split(".");
+      const rawName = pkgParts[pkgParts.length - 1] || packageName;
+      const label = rawName.charAt(0).toUpperCase() + rawName.slice(1).replace(/_/g, " ");
+      const versionName = (flagInfo == null ? void 0 : flagInfo.versionName) || "1.0.0";
+      apps.push({
+        id: packageName,
+        packageName,
+        label,
+        apkPath,
+        isSystem,
+        versionName,
+        permissions: ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"]
+      });
+    }
+    apps.sort((a, b) => a.label.localeCompare(b.label));
+    logger.info(`Listed ${apps.length} installed apps (${filterType}) for ${activeSerial}`, "AppManagerService");
+    return apps;
   }
   /**
    * Feature: Launch App (`monkey -p <packageName> 1`)
@@ -2201,52 +2737,46 @@ const _AppManagerService = class _AppManagerService {
     }
   }
   /**
-   * Feature: Backup / Export APK (`adb pull <apkPath> <destDir>`)
+   * Feature: Export / Backup APK (`adb pull <apkPath> <destDir>/<packageName>.apk`)
    */
-  async exportApk(serial, packageName, localDestDir) {
+  async exportApk(serial, packageName, destDir) {
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) return { success: false, message: "No active device connected." };
     try {
-      const pathArgs = ["-s", activeSerial, "shell", "pm", "path", packageName];
-      const { stdout: pathOut } = await adbService.execAdb(pathArgs);
-      const line = pathOut.trim().split(/\r?\n/)[0] || "";
-      const remoteApkPath = line.replace("package:", "").trim();
-      if (!remoteApkPath) {
-        throw new Error(`Could not find APK path for ${packageName}`);
-      }
-      const targetFile = path.join(localDestDir, `${packageName}.apk`);
-      const pullArgs = ["-s", activeSerial, "pull", remoteApkPath, targetFile];
-      await adbService.execAdb(pullArgs);
-      logger.info(`Exported ${packageName} to ${targetFile}`, "AppManagerService");
-      return { success: true, message: `Exported ${packageName}.apk to ${localDestDir}` };
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "pm", "path", packageName]);
+      const firstLine = stdout.split(/\r?\n/).find((l) => l.trim().startsWith("package:"));
+      if (!firstLine) return { success: false, message: `Could not find APK path for ${packageName}` };
+      const apkPathOnDevice = firstLine.trim().replace("package:", "").trim();
+      const localDestPath = `${destDir}/${packageName}.apk`;
+      await adbService.execAdb(["-s", activeSerial, "pull", apkPathOnDevice, localDestPath]);
+      logger.info(`Exported APK for ${packageName} to ${localDestPath}`, "AppManagerService");
+      return { success: true, message: `Exported ${packageName}.apk to ${destDir}` };
     } catch (err) {
-      return { success: false, message: `Export failed: ${err.message}` };
+      return { success: false, message: `APK export failed: ${err.message}` };
     }
   }
   /**
-   * Feature: Clear App Data / Cache (`pm clear <packageName>`)
+   * Feature: Clear App Data & Cache (`pm clear <packageName>`)
    */
   async clearAppData(serial, packageName) {
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) return { success: false, message: "No active device connected." };
     try {
-      const args = ["-s", activeSerial, "shell", "pm", "clear", packageName];
-      await adbService.execAdb(args);
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "pm", "clear", packageName]);
       logger.info(`Cleared data for ${packageName}`, "AppManagerService");
-      return { success: true, message: `Cleared cache & data for ${packageName}.` };
+      return { success: true, message: stdout.trim() || `Cleared data for ${packageName}.` };
     } catch (err) {
-      return { success: false, message: `Failed clearing data: ${err.message}` };
+      return { success: false, message: `Clear data failed: ${err.message}` };
     }
   }
   /**
-   * Feature: Show Permissions (`dumpsys package <packageName>`)
+   * Feature: Get App Requested Permissions (`dumpsys package <packageName>`)
    */
-  async getPermissions(serial, packageName) {
+  async getAppPermissions(serial, packageName) {
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) return [];
     try {
-      const args = ["-s", activeSerial, "shell", "dumpsys", "package", packageName];
-      const { stdout } = await adbService.execAdb(args);
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "package", packageName]);
       const lines = stdout.split(/\r?\n/);
       const permissions = [];
       let inPermSection = false;
@@ -2256,17 +2786,20 @@ const _AppManagerService = class _AppManagerService {
           continue;
         }
         if (inPermSection) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.includes(":") || trimmed.startsWith("install permissions")) {
+          if (line.includes("install permissions:") || line.includes("runtime permissions:") || line.includes("User ") || !line.trim()) {
             inPermSection = false;
             continue;
           }
-          permissions.push(trimmed.replace("android.permission.", ""));
+          const trimmed = line.trim();
+          if (trimmed.startsWith("android.permission.")) {
+            permissions.push(trimmed);
+          }
         }
       }
-      return permissions.length > 0 ? permissions : ["INTERNET", "ACCESS_NETWORK_STATE", "WAKE_LOCK", "READ_EXTERNAL_STORAGE"];
-    } catch {
-      return ["INTERNET", "ACCESS_NETWORK_STATE", "CAMERA", "RECORD_AUDIO"];
+      return Array.from(new Set(permissions));
+    } catch (err) {
+      logger.error(`Error fetching permissions for ${packageName}`, "AppManagerService", err);
+      return [];
     }
   }
 };
@@ -2569,6 +3102,48 @@ function cleanPrimitiveString(val) {
   return str.replace(/^["']|["']$/g, "").trim();
 }
 const trackMetadataCache = /* @__PURE__ */ new Map();
+function classifyMediaSession(packageName, title, artist, album, durationMs) {
+  try {
+    const pkg = (packageName || "").toLowerCase();
+    const t = (title || "").toLowerCase();
+    if (pkg.includes("youtube.music") || pkg.includes("spotify") || pkg.includes("echo.music") || pkg.includes("iad1tya.echo") || pkg.includes("apple.music") || pkg.includes("pandora") || pkg.includes("deezer") || pkg.includes("tidal") || pkg.includes("poweramp") || pkg.includes("musicolet") || pkg.includes("shuttle") || pkg.includes("blackplayer") || pkg.includes("vlc") && (artist || album)) {
+      let sourceApp = "Music";
+      if (pkg.includes("spotify")) sourceApp = "Spotify";
+      else if (pkg.includes("youtube.music")) sourceApp = "YT Music";
+      else if (pkg.includes("echo")) sourceApp = "Echo";
+      else if (pkg.includes("apple.music")) sourceApp = "Apple Music";
+      else if (pkg.includes("poweramp")) sourceApp = "PowerAmp";
+      else if (pkg.includes("musicolet")) sourceApp = "Musicolet";
+      return { mediaType: "music", sourceApp, sourceBadge: `🎵 ${sourceApp}` };
+    }
+    if (pkg.includes("youtube") || pkg.includes("vanced") || pkg.includes("revanced") || pkg.includes("newpipe") || pkg.includes("chrome") || pkg.includes("firefox") || pkg.includes("brave") || pkg.includes("browser") || pkg.includes("twitch") || pkg.includes("netflix") || pkg.includes("primevideo") || pkg.includes("videoplayer") || pkg.includes("mxtech")) {
+      let sourceApp = "Video";
+      if (pkg.includes("youtube") || pkg.includes("vanced") || pkg.includes("revanced") || pkg.includes("newpipe")) sourceApp = "YouTube";
+      else if (pkg.includes("chrome")) sourceApp = "Chrome";
+      else if (pkg.includes("firefox")) sourceApp = "Firefox";
+      else if (pkg.includes("brave")) sourceApp = "Brave";
+      else if (pkg.includes("twitch")) sourceApp = "Twitch";
+      else if (pkg.includes("netflix")) sourceApp = "Netflix";
+      else if (pkg.includes("prime")) sourceApp = "Prime Video";
+      else if (pkg.includes("mxtech") || pkg.includes("videoplayer")) sourceApp = "MX Player";
+      return { mediaType: "video", sourceApp, sourceBadge: `🎬 ${sourceApp}` };
+    }
+    if (t.includes("|") || t.includes("official video") || t.includes("trailer") || t.includes("ep ") || t.includes("china") || t.includes("vlog")) {
+      return { mediaType: "video", sourceApp: "Video", sourceBadge: "🎬 Video" };
+    }
+    const fallbackApp = pkg ? pkg.split(".").pop() || "Media" : "Media";
+    const capApp = fallbackApp.charAt(0).toUpperCase() + fallbackApp.slice(1);
+    return { mediaType: "music", sourceApp: capApp, sourceBadge: `🎵 ${capApp}` };
+  } catch (err) {
+    logger.warn(`classifyMediaSession exception: ${err == null ? void 0 : err.message}`, "DeviceControlService");
+    return { mediaType: "unknown", sourceApp: packageName || "Unknown", sourceBadge: "📱 Media" };
+  }
+}
+if (typeof classifyMediaSession !== "function") {
+  logger.error("CRITICAL ERROR: classifyMediaSession is NOT a function during module startup validation!", "DeviceControlService");
+} else {
+  logger.info("classifyMediaSession function validated successfully during module startup", "DeviceControlService");
+}
 const immutableCapCache = /* @__PURE__ */ new Map();
 function cleanClipboardOutput(stdout) {
   if (!stdout) return "";
@@ -3059,187 +3634,233 @@ const _DeviceControlService = class _DeviceControlService {
       else if (rawState === 6) playbackState = "buffering";
       else if (rawState === 1 || rawState === 0) playbackState = "stopped";
       const isPlaying = playbackState === "playing";
-      const trackIdentifier = `${playerPackage}/${title}/${artist}`;
+      const sessionId = `${playerPackage}|${title}|${artist}|${album}`;
       const cached = trackMetadataCache.get(activeSerial);
-      if (durationMs <= 0 && (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier && (cached == null ? void 0 : cached.durationMs) && cached.durationMs > 0) {
-        durationMs = cached.durationMs;
-      }
-      let artworkUrl = (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier ? cached == null ? void 0 : cached.artworkUrl : void 0;
-      if (!artworkUrl && selectedSession.artworkUri) {
-        const rawUri = selectedSession.artworkUri;
-        if (rawUri.startsWith("http://") || rawUri.startsWith("https://")) {
-          artworkUrl = rawUri;
-        } else if (rawUri.startsWith("content://") || rawUri.startsWith("file://") || rawUri.startsWith("media://")) {
-          try {
-            const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${rawUri}" | base64`]);
-            const cleanB64 = shellB64.replace(/\s+/g, "");
-            if (cleanB64.length > 50 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
-              artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
-            }
-          } catch {
+      let artworkUrl;
+      if (cached && cached.sessionId === sessionId) {
+        artworkUrl = cached.artworkUrl;
+        if (durationMs <= 0 && cached.durationMs && cached.durationMs > 0) {
+          durationMs = cached.durationMs;
+        }
+      } else {
+        if (cached) {
+          logger.info(`[Artwork] Session identity changed: "${cached.sessionId}" -> "${sessionId}"`, "DeviceControlService");
+        } else {
+          logger.info(`[Artwork] New media session detected: "${sessionId}"`, "DeviceControlService");
+        }
+        if (selectedSession.artworkUri) {
+          const rawUri = selectedSession.artworkUri;
+          if (rawUri.startsWith("http://") || rawUri.startsWith("https://")) {
+            artworkUrl = rawUri;
+          } else if (rawUri.startsWith("content://") || rawUri.startsWith("file://") || rawUri.startsWith("media://")) {
             try {
-              const { stdout: suB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `su -c "content read --uri \\"${rawUri}\\" | base64"`]);
-              const cleanB64 = suB64.replace(/\s+/g, "");
+              const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${rawUri}" | base64`]);
+              const cleanB64 = shellB64.replace(/\s+/g, "");
               if (cleanB64.length > 50 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
                 artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
               }
             } catch {
+              try {
+                const { stdout: suB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `su -c "content read --uri \\"${rawUri}\\" | base64"`]);
+                const cleanB64 = suB64.replace(/\s+/g, "");
+                if (cleanB64.length > 50 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                  artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+                }
+              } catch {
+              }
             }
           }
         }
-      }
-      async function fetchOnlineMetadata(title2, artist2, playerPackage2 = "") {
-        return new Promise((resolve) => {
-          const cleanTitle = (title2 || "").trim();
-          const cleanArtist = (artist2 || "").trim();
-          const pkg = (playerPackage2 || "").toLowerCase();
-          const isVideo = pkg.includes("youtube") && !pkg.includes("music");
-          if (!cleanTitle) {
-            resolve(null);
-            return;
-          }
-          if (isVideo) {
-            const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanTitle + " " + cleanArtist)}`;
-            const req = https.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
-              let html = "";
-              res.on("data", (c) => html += c);
-              res.on("end", () => {
-                const videoIdM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
-                const durM = html.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);
-                let durationMs2 = 0;
-                if (durM && durM[1]) {
-                  const parts = durM[1].split(":").map(Number);
-                  if (parts.length === 2) durationMs2 = (parts[0] * 60 + parts[1]) * 1e3;
-                  else if (parts.length === 3) durationMs2 = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1e3;
-                }
-                const artworkUrl2 = videoIdM ? `https://img.youtube.com/vi/${videoIdM[1]}/hqdefault.jpg` : "";
-                resolve({ durationMs: durationMs2, artworkUrl: artworkUrl2 });
-              });
-            });
-            req.on("error", () => resolve(null));
-            req.setTimeout(2500, () => {
-              req.destroy();
+        async function fetchOnlineMetadata(title2, artist2, playerPackage2 = "") {
+          return new Promise((resolve) => {
+            const cleanTitle = (title2 || "").trim();
+            const cleanArtist = (artist2 || "").trim();
+            const pkg = (playerPackage2 || "").toLowerCase();
+            const isVideo = pkg.includes("youtube") || pkg.includes("vanced") || pkg.includes("revanced") || cleanTitle.includes("|") || cleanTitle.includes("🛑") || cleanTitle.includes("Ep ") || cleanTitle.includes("China") || cleanTitle.length > 25;
+            if (!cleanTitle) {
               resolve(null);
-            });
-          } else {
-            const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
-            const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
-            const req = https.get(url, (res) => {
-              let data = "";
-              res.on("data", (c) => data += c);
-              res.on("end", () => {
-                try {
-                  const json = JSON.parse(data);
-                  if (json.results && json.results[0]) {
-                    const item = json.results[0];
-                    resolve({
-                      durationMs: item.trackTimeMillis || 0,
-                      artworkUrl: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : ""
+              return;
+            }
+            if (isVideo) {
+              const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
+              const searchUrl = `https://www.youtube.com/results?search_query=${query}`;
+              const headers = { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36" };
+              const req = https.get(searchUrl, { headers }, (res) => {
+                let html = "";
+                res.on("data", (c) => html += c);
+                res.on("end", () => {
+                  const videoIdM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+                  if (!videoIdM || !videoIdM[1]) {
+                    resolve(null);
+                    return;
+                  }
+                  const videoId = videoIdM[1];
+                  const artworkUrl2 = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+                  const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                  const watchReq = https.get(watchUrl, { headers }, (watchRes) => {
+                    let watchHtml = "";
+                    watchRes.on("data", (c) => watchHtml += c);
+                    watchRes.on("end", () => {
+                      const durMsM = watchHtml.match(/"approxDurationMs":"(\d+)"/);
+                      const durSecM = watchHtml.match(/"lengthSeconds":"(\d+)"/);
+                      let durationMs2 = 0;
+                      if (durMsM && durMsM[1]) {
+                        durationMs2 = parseInt(durMsM[1], 10);
+                      } else if (durSecM && durSecM[1]) {
+                        durationMs2 = parseInt(durSecM[1], 10) * 1e3;
+                      }
+                      resolve({ durationMs: durationMs2, artworkUrl: artworkUrl2 });
                     });
-                  } else {
+                  });
+                  watchReq.on("error", () => resolve({ durationMs: 0, artworkUrl: artworkUrl2 }));
+                  watchReq.setTimeout(2500, () => {
+                    watchReq.destroy();
+                    resolve({ durationMs: 0, artworkUrl: artworkUrl2 });
+                  });
+                });
+              });
+              req.on("error", () => resolve(null));
+              req.setTimeout(3500, () => {
+                req.destroy();
+                resolve(null);
+              });
+            } else {
+              const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
+              const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+              const req = https.get(url, (res) => {
+                let data = "";
+                res.on("data", (c) => data += c);
+                res.on("end", () => {
+                  try {
+                    const json = JSON.parse(data);
+                    if (json.results && json.results[0]) {
+                      const item = json.results[0];
+                      resolve({
+                        durationMs: item.trackTimeMillis || 0,
+                        artworkUrl: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : ""
+                      });
+                    } else {
+                      resolve(null);
+                    }
+                  } catch {
                     resolve(null);
                   }
-                } catch {
-                  resolve(null);
-                }
+                });
               });
-            });
-            req.on("error", () => resolve(null));
-            req.setTimeout(2500, () => {
-              req.destroy();
-              resolve(null);
-            });
-          }
-        });
-      }
-      const isStreamingOrVideoApp = playerPackage.toLowerCase().includes("youtube") || playerPackage.toLowerCase().includes("vanced") || playerPackage.toLowerCase().includes("morphe") || playerPackage.toLowerCase().includes("revanced") || playerPackage.toLowerCase().includes("netflix") || playerPackage.toLowerCase().includes("twitch") || playerPackage.toLowerCase().includes("chrome") || playerPackage.toLowerCase().includes("browser") || playerPackage.toLowerCase().includes("spotify") || playerPackage.toLowerCase().includes("soundcloud") || playerPackage.toLowerCase().includes("saavn") || playerPackage.toLowerCase().includes("gaana") || playerPackage.toLowerCase().includes("wynk");
-      if (isStreamingOrVideoApp && artworkUrl && artworkUrl.startsWith("data:image")) {
-        artworkUrl = void 0;
-      }
-      if (title) {
-        if (isStreamingOrVideoApp) {
-          const online = await fetchOnlineMetadata(title, artist, playerPackage);
-          if (online) {
-            if (online.durationMs > 0) durationMs = online.durationMs;
-            if (online.artworkUrl) artworkUrl = online.artworkUrl;
-          }
-        } else if (durationMs <= 0 || !artworkUrl) {
-          try {
-            const titleKeywords = (title || "").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length >= 2);
-            const otherKeywords = [artist, album].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length > 2);
-            if (titleKeywords.length > 0 || otherKeywords.length > 0) {
-              const { stdout: mediaOut } = await adbService.execAdb(["-s", activeSerial, "shell", "content", "query", "--uri", "content://media/external/audio/media", "--projection", "_id:album_id:duration:title:artist:album"]);
-              const lines = mediaOut.split("\n");
-              const matchingRows = [];
-              for (const line of lines) {
-                if (!line.includes("Row:")) continue;
-                const lowerLine = line.toLowerCase();
-                let titleScore = 0;
-                for (const kw of titleKeywords) {
-                  if (lowerLine.includes(kw)) titleScore += 10;
-                }
-                let otherScore = 0;
-                for (const kw of otherKeywords) {
-                  if (lowerLine.includes(kw)) otherScore += 1;
-                }
-                if (titleKeywords.length > 0 && titleScore === 0) {
-                  continue;
-                }
-                const totalScore = titleScore + otherScore;
-                if (totalScore > 0) {
-                  matchingRows.push({ line, score: totalScore });
-                }
-              }
-              matchingRows.sort((a, b) => b.score - a.score);
-              for (const { line } of matchingRows) {
-                if (durationMs <= 0) {
-                  const durM = line.match(/duration=(\d+)/i);
-                  if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
-                    let parsedDur = parseInt(durM[1], 10);
-                    if (parsedDur > 0 && parsedDur < 1e4) {
-                      parsedDur *= 1e3;
-                    }
-                    durationMs = parsedDur;
-                  }
-                }
-                if (!artworkUrl) {
-                  const albM = line.match(/album_id=(\d+)/i);
-                  const idM = line.match(/_id=(\d+)/i);
-                  let artTargetUri = "";
-                  if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
-                  else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
-                  if (artTargetUri) {
-                    try {
-                      const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${artTargetUri}" | base64`]);
-                      const cleanB64 = shellB64.replace(/\s+/g, "");
-                      if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
-                        artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
-                        break;
-                      }
-                    } catch {
-                    }
-                  }
-                } else if (durationMs > 0) {
-                  break;
-                }
-              }
+              req.on("error", () => resolve(null));
+              req.setTimeout(2500, () => {
+                req.destroy();
+                resolve(null);
+              });
             }
-          } catch {
-          }
-          if (durationMs <= 0 || !artworkUrl) {
+          });
+        }
+        const isStreamingOrVideoApp = playerPackage.toLowerCase().includes("youtube") || playerPackage.toLowerCase().includes("vanced") || playerPackage.toLowerCase().includes("morphe") || playerPackage.toLowerCase().includes("revanced") || playerPackage.toLowerCase().includes("netflix") || playerPackage.toLowerCase().includes("twitch") || playerPackage.toLowerCase().includes("chrome") || playerPackage.toLowerCase().includes("browser") || playerPackage.toLowerCase().includes("spotify") || playerPackage.toLowerCase().includes("soundcloud") || playerPackage.toLowerCase().includes("saavn") || playerPackage.toLowerCase().includes("gaana") || playerPackage.toLowerCase().includes("wynk");
+        if (isStreamingOrVideoApp && artworkUrl && artworkUrl.startsWith("data:image")) {
+          artworkUrl = void 0;
+        }
+        if (title) {
+          if (isStreamingOrVideoApp) {
             const online = await fetchOnlineMetadata(title, artist, playerPackage);
             if (online) {
-              if (durationMs <= 0 && online.durationMs > 0) durationMs = online.durationMs;
-              if (!artworkUrl && online.artworkUrl) artworkUrl = online.artworkUrl;
+              if (online.durationMs > 0) durationMs = online.durationMs;
+              if (online.artworkUrl) artworkUrl = online.artworkUrl;
+            }
+          } else if (durationMs <= 0 || !artworkUrl) {
+            try {
+              const titleKeywords = (title || "").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length >= 2);
+              const otherKeywords = [artist, album].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length > 2);
+              if (titleKeywords.length > 0 || otherKeywords.length > 0) {
+                const { stdout: mediaOut } = await adbService.execAdb(["-s", activeSerial, "shell", "content", "query", "--uri", "content://media/external/audio/media", "--projection", "_id:album_id:duration:title:artist:album"]);
+                const lines = mediaOut.split("\n");
+                const matchingRows = [];
+                for (const line of lines) {
+                  if (!line.includes("Row:")) continue;
+                  const lowerLine = line.toLowerCase();
+                  let titleScore = 0;
+                  for (const kw of titleKeywords) {
+                    if (lowerLine.includes(kw)) titleScore += 10;
+                  }
+                  let otherScore = 0;
+                  for (const kw of otherKeywords) {
+                    if (lowerLine.includes(kw)) otherScore += 1;
+                  }
+                  if (titleKeywords.length > 0 && titleScore === 0) continue;
+                  const totalScore = titleScore + otherScore;
+                  if (totalScore > 0) {
+                    matchingRows.push({ line, score: totalScore });
+                  }
+                }
+                matchingRows.sort((a, b) => b.score - a.score);
+                for (const { line } of matchingRows) {
+                  if (durationMs <= 0) {
+                    const durM = line.match(/duration=(\d+)/i);
+                    if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
+                      let parsedDur = parseInt(durM[1], 10);
+                      if (parsedDur > 0 && parsedDur < 1e4) parsedDur *= 1e3;
+                      durationMs = parsedDur;
+                    }
+                  }
+                  if (!artworkUrl) {
+                    const albM = line.match(/album_id=(\d+)/i);
+                    const idM = line.match(/_id=(\d+)/i);
+                    let artTargetUri = "";
+                    if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
+                    else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
+                    if (artTargetUri) {
+                      try {
+                        const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${artTargetUri}" | base64`]);
+                        const cleanB64 = shellB64.replace(/\s+/g, "");
+                        if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                          artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+                          break;
+                        }
+                      } catch {
+                      }
+                    }
+                  } else if (durationMs > 0) {
+                    break;
+                  }
+                }
+              }
+            } catch {
+            }
+            if (durationMs <= 0 || !artworkUrl) {
+              const online = await fetchOnlineMetadata(title, artist, playerPackage);
+              if (online) {
+                if (durationMs <= 0 && online.durationMs > 0) durationMs = online.durationMs;
+                if (!artworkUrl && online.artworkUrl) artworkUrl = online.artworkUrl;
+              }
             }
           }
         }
+        if (artworkUrl) {
+          logger.info(`[Artwork] Loaded for session "${sessionId}": ${artworkUrl.slice(0, 60)}...`, "DeviceControlService");
+        } else {
+          logger.info(`[Artwork] Unavailable for session "${sessionId}"`, "DeviceControlService");
+        }
+        trackMetadataCache.set(activeSerial, { sessionId, artworkUrl, durationMs });
       }
-      if (!artworkUrl && (cached == null ? void 0 : cached.artworkUrl) && playbackState !== "stopped") {
-        artworkUrl = cached.artworkUrl;
-      }
-      trackMetadataCache.set(activeSerial, { trackIdentifier, artworkUrl, durationMs });
       const resolvedAppLabel = await this.getPackageLabel(activeSerial, playerPackage);
+      let classification = {
+        mediaType: "unknown",
+        sourceApp: playerPackage || "Unknown",
+        sourceBadge: "📱 Media"
+      };
+      try {
+        if (typeof classifyMediaSession === "function") {
+          classification = classifyMediaSession(playerPackage, title, artist, album, durationMs);
+        } else {
+          logger.error("classifyMediaSession is not a function during getMediaInfo execution", "DeviceControlService");
+        }
+      } catch (e) {
+        logger.warn(`Media classification failed: ${e == null ? void 0 : e.message}`, "DeviceControlService");
+        classification = {
+          mediaType: "unknown",
+          sourceApp: playerPackage || "Unknown",
+          sourceBadge: "📱 Media"
+        };
+      }
       return {
         isPlaying,
         playbackState,
@@ -3249,7 +3870,10 @@ const _DeviceControlService = class _DeviceControlService {
         playerPackage: resolvedAppLabel,
         positionMs,
         durationMs,
-        artworkUrl
+        artworkUrl,
+        mediaType: classification.mediaType,
+        sourceApp: classification.sourceApp,
+        sourceBadge: classification.sourceBadge
       };
     } catch (err) {
       logger.debug(`getMediaInfo failed for ${activeSerial}: ${err.message}`, "DeviceControlService");
