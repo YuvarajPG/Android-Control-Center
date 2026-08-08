@@ -24,6 +24,21 @@ export interface AdbCommandResult {
   data?: unknown;
 }
 
+export interface StaticDeviceInfo {
+  manufacturer: string;
+  model: string;
+  marketingName?: string;
+  deviceName: string;
+  androidVersion: string;
+  sdkVersion: string;
+  hardwareSerial: string;
+  developerOptions: boolean;
+  adbWifiEnabled: boolean;
+  isRooted: boolean;
+  hasShizuku: boolean;
+  fetchedAt: number;
+}
+
 export class ADBService {
   private static instance: ADBService;
 
@@ -37,6 +52,195 @@ export class ADBService {
   }
 
   private cachedAdbExecutablePath: string | null = null;
+  private staticDeviceCache = new Map<string, StaticDeviceInfo>();
+
+  /**
+   * Fetch static device properties (Manufacturer, Model, Android Version, SDK, Hardware Serial, Root, Shizuku, Dev Options) ONCE.
+   * Caches forever per device serial until disconnected or manually invalidated.
+   */
+  public async fetchStaticDeviceInfo(serial: string): Promise<StaticDeviceInfo> {
+    const activeSerial = (await this.resolveActiveSerial(serial)) || serial;
+    const cached = this.staticDeviceCache.get(activeSerial);
+    if (cached) {
+      logger.debug(`[Polling] Using cached static device info for ${activeSerial}`, 'ADBService');
+      return cached;
+    }
+
+    logger.info(`[Polling] Fetching static info for ${activeSerial}`, 'ADBService');
+
+    const [manRes, modRes, nameRes, verRes, sdkRes, devRes, wlanRes, hwSerialRes, suRes, shizRes] = await Promise.allSettled([
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.product.manufacturer']),
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.product.model']),
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.config.marketing_name']),
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.build.version.release']),
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.build.version.sdk']),
+      this.execAdb(['-s', activeSerial, 'shell', 'settings', 'get', 'global', 'development_settings_enabled']),
+      this.execAdb(['-s', activeSerial, 'shell', 'settings', 'get', 'global', 'adb_wifi_enabled']),
+      this.execAdb(['-s', activeSerial, 'shell', 'getprop', 'ro.serialno']),
+      this.execAdb(['-s', activeSerial, 'shell', 'which', 'su']),
+      this.execAdb(['-s', activeSerial, 'shell', 'pm', 'list', 'packages', 'moe.shizuku.privileged.api']),
+    ]);
+
+    let manufacturer = 'Android';
+    if (manRes.status === 'fulfilled' && manRes.value.stdout.trim()) {
+      const raw = manRes.value.stdout.trim();
+      manufacturer = raw.charAt(0).toUpperCase() + raw.slice(1);
+    }
+
+    let model = 'Generic Device';
+    if (modRes.status === 'fulfilled' && modRes.value.stdout.trim()) {
+      model = modRes.value.stdout.trim();
+    }
+
+    let deviceName = `${manufacturer} ${model}`;
+    if (nameRes.status === 'fulfilled' && nameRes.value.stdout.trim()) {
+      deviceName = nameRes.value.stdout.trim();
+    }
+
+    let androidVersion = 'Android';
+    let sdkVersion = '';
+    if (verRes.status === 'fulfilled' && verRes.value.stdout.trim()) {
+      const rel = verRes.value.stdout.trim();
+      sdkVersion = sdkRes.status === 'fulfilled' ? sdkRes.value.stdout.trim() : '';
+      androidVersion = `Android ${rel}${sdkVersion ? ` (API ${sdkVersion})` : ''}`;
+    }
+
+    let developerOptions = true;
+    if (devRes.status === 'fulfilled' && devRes.value.stdout.trim()) {
+      developerOptions = devRes.value.stdout.trim() === '1';
+    }
+
+    let adbWifiEnabled = true;
+    if (wlanRes.status === 'fulfilled' && wlanRes.value.stdout.trim()) {
+      adbWifiEnabled = wlanRes.value.stdout.trim() === '1';
+    }
+
+    let hardwareSerial = activeSerial;
+    if (hwSerialRes.status === 'fulfilled' && hwSerialRes.value.stdout.trim()) {
+      hardwareSerial = hwSerialRes.value.stdout.trim();
+    }
+
+    let isRooted = false;
+    if (suRes.status === 'fulfilled' && suRes.value.stdout.trim() && !suRes.value.stdout.includes('not found')) {
+      isRooted = true;
+    }
+
+    let hasShizuku = false;
+    if (shizRes.status === 'fulfilled' && shizRes.value.stdout.includes('moe.shizuku.privileged.api')) {
+      hasShizuku = true;
+    }
+
+    const staticInfo: StaticDeviceInfo = {
+      manufacturer,
+      model,
+      deviceName,
+      androidVersion,
+      sdkVersion,
+      hardwareSerial,
+      developerOptions,
+      adbWifiEnabled,
+      isRooted,
+      hasShizuku,
+      fetchedAt: Date.now(),
+    };
+
+    this.staticDeviceCache.set(activeSerial, staticInfo);
+    return staticInfo;
+  }
+
+  public invalidateStaticDeviceCache(serial?: string): void {
+    if (serial) {
+      this.staticDeviceCache.delete(serial);
+      logger.info(`[Polling] Invalidated static device info cache for ${serial}`, 'ADBService');
+    } else {
+      this.staticDeviceCache.clear();
+      logger.info('[Polling] Cleared all static device info cache', 'ADBService');
+    }
+  }
+
+  /**
+   * Fetch rich device properties using cached StaticDeviceInfo.
+   * Does NOT execute expensive polling like dumpsys wifi or df -h.
+   */
+  public async fetchDetailedDeviceSpecs(serial: string, status: DeviceInfoModel['status'], connectionType: 'usb' | 'wireless'): Promise<DeviceInfoModel> {
+    const existing = trustedDevicesService.getBySerial(serial);
+
+    if (status !== 'online') {
+      return {
+        id: existing?.id || serial,
+        serialNumber: serial,
+        hardwareSerial: existing?.hardwareSerial || serial,
+        deviceName: existing?.deviceName || 'Disconnected Device',
+        manufacturer: existing?.manufacturer || 'Android',
+        model: existing?.model || 'Generic Device',
+        connectionType,
+        status,
+        batteryLevel: existing?.batteryLevel,
+        isCharging: existing?.isCharging,
+        chargingType: existing?.chargingType,
+        androidVersion: existing?.androidVersion,
+        developerMode: existing?.developerMode ?? false,
+        wirelessDebugging: existing?.wirelessDebugging ?? false,
+        adbStatus: 'Disconnected',
+        lastConnected: existing?.lastConnected,
+      };
+    }
+
+    const staticInfo = await this.fetchStaticDeviceInfo(serial);
+
+    let batteryLevel: number | undefined = existing?.batteryLevel;
+    let isCharging: boolean | undefined = existing?.isCharging;
+    let chargingType: string | undefined = existing?.chargingType;
+
+    // Fast Battery check
+    try {
+      const batRes = await this.execAdb(['-s', serial, 'shell', 'dumpsys', 'battery']);
+      if (batRes.stdout) {
+        const batTxt = batRes.stdout;
+        const levelMatch = batTxt.match(/level:\s*(\d+)/i);
+        const statusMatch = batTxt.match(/status:\s*(\d+)/i);
+        const acMatch = batTxt.match(/AC powered:\s*true/i);
+        const usbMatch = batTxt.match(/USB powered:\s*true/i);
+        const wirelessMatch = batTxt.match(/Wireless powered:\s*true/i);
+
+        if (levelMatch && levelMatch[1]) batteryLevel = parseInt(levelMatch[1], 10);
+        if (statusMatch && statusMatch[1]) isCharging = parseInt(statusMatch[1], 10) === 2;
+
+        if (acMatch) chargingType = 'AC Adapter Fast Charge';
+        else if (usbMatch) chargingType = 'USB Data Port';
+        else if (wirelessMatch) chargingType = 'Qi Wireless Charging';
+        else chargingType = isCharging ? 'Charging' : 'Discharging (Battery)';
+      }
+    } catch {
+      // ignore
+    }
+
+    const ipAddress = existing?.ipAddress || (serial.includes(':') ? serial.split(':')[0] || '' : undefined);
+    const port = existing?.port || 5555;
+
+    const deviceModel: DeviceInfoModel = {
+      id: `dev_${serial.replace(/[^a-zA-Z0-9]/g, '_')}`,
+      serialNumber: serial,
+      deviceName: staticInfo.deviceName,
+      model: staticInfo.model,
+      manufacturer: staticInfo.manufacturer,
+      androidVersion: staticInfo.androidVersion,
+      batteryLevel,
+      isCharging,
+      chargingType,
+      developerMode: staticInfo.developerOptions,
+      wirelessDebugging: staticInfo.adbWifiEnabled,
+      connectionType,
+      ipAddress,
+      port,
+      status: 'online',
+      hardwareSerial: staticInfo.hardwareSerial || serial,
+      adbStatus: 'Active Connected',
+      lastConnected: new Date(),
+    };
+
+    return deviceModel;
+  }
 
   /**
    * Resolve active ADB executable path from settings or system PATH asynchronously
@@ -394,273 +598,7 @@ export class ADBService {
     }
   }
 
-  /**
-   * Fetch rich device properties (Manufacturer, Model, Android Version, Battery, Storage, CPU, RAM, Temperature, Network, Dev Mode)
-   */
-  public async fetchDetailedDeviceSpecs(serial: string, status: DeviceInfoModel['status'], connectionType: 'usb' | 'wireless'): Promise<DeviceInfoModel> {
-    const existing = trustedDevicesService.getBySerial(serial);
 
-    let manufacturer = existing?.manufacturer || 'Android';
-    let model = existing?.model || (status === 'unauthorized' ? 'Unauthorized Device' : 'Generic Device');
-    let deviceName = existing?.deviceName || (status === 'unauthorized' ? 'Unauthorized Phone' : 'Android Device');
-    let androidVersion = existing?.androidVersion || undefined;
-    let batteryLevel: number | undefined = existing?.batteryLevel;
-    let isCharging: boolean | undefined = existing?.isCharging;
-    let chargingType: string | undefined = existing?.chargingType;
-    let storageFree: string | undefined = existing?.storageFree;
-    let storageTotal: string | undefined = existing?.storageTotal;
-    let storageUsedPercent: number | undefined = existing?.storageUsedPercent;
-
-    let cpuUsage: number | undefined = existing?.cpuUsage;
-    let cpuModel: string | undefined = existing?.cpuModel;
-    let cpuCores: number | undefined = existing?.cpuCores;
-
-    let ramUsedGB: string | undefined = existing?.ramUsedGB;
-    let ramTotalGB: string | undefined = existing?.ramTotalGB;
-    let ramPercent: number | undefined = existing?.ramPercent;
-
-    let temperature: number | undefined = existing?.temperature;
-    let thermalStatus: string | undefined = existing?.thermalStatus;
-
-    let networkSsid: string | undefined = existing?.networkSsid;
-    let networkRssi: number | undefined = existing?.networkRssi;
-    let networkType: 'wifi' | 'cellular' | 'none' | undefined = existing?.networkType;
-    let carrierName: string | undefined = existing?.carrierName;
-    let cellularGeneration: string | undefined = existing?.cellularGeneration;
-
-    let ipAddress = existing?.ipAddress || (serial.includes(':') ? serial.split(':')[0] || '' : undefined);
-    const port = existing?.port || 5555;
-
-    const adbStatus = status === 'online' ? 'Active Connected' : status === 'unauthorized' ? 'Unauthorized' : 'Disconnected';
-    let developerMode = existing?.developerMode ?? (status === 'online');
-    let wirelessDebugging = existing?.wirelessDebugging ?? (status === 'online');
-
-    let hardwareSerial = existing?.hardwareSerial || '';
-
-    if (status === 'online') {
-      try {
-        const [manRes, modRes, nameRes, verRes, sdkRes, batRes, dfRes, ipRes, memRes, devRes, wlanRes, hwSerialRes, operatorRes, netTypeRes, wifiRes] = await Promise.allSettled([
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.product.manufacturer']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.product.model']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.config.marketing_name']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.build.version.release']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.build.version.sdk']),
-          this.execAdb(['-s', serial, 'shell', 'dumpsys', 'battery']),
-          this.execAdb(['-s', serial, 'shell', 'df', '-h', '/sdcard']),
-          this.execAdb(['-s', serial, 'shell', 'ip', 'route']),
-          this.execAdb(['-s', serial, 'shell', 'cat', '/proc/meminfo']),
-          this.execAdb(['-s', serial, 'shell', 'settings', 'get', 'global', 'development_settings_enabled']),
-          this.execAdb(['-s', serial, 'shell', 'settings', 'get', 'global', 'adb_wifi_enabled']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'ro.serialno']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'gsm.operator.alpha']),
-          this.execAdb(['-s', serial, 'shell', 'getprop', 'gsm.network.type']),
-          this.execAdb(['-s', serial, 'shell', 'dumpsys', 'wifi']),
-        ]);
-
-        if (manRes.status === 'fulfilled' && manRes.value.stdout.trim()) {
-          const raw = manRes.value.stdout.trim();
-          manufacturer = raw.charAt(0).toUpperCase() + raw.slice(1);
-        }
-
-        if (modRes.status === 'fulfilled' && modRes.value.stdout.trim()) {
-          model = modRes.value.stdout.trim();
-        }
-
-        if (nameRes.status === 'fulfilled' && nameRes.value.stdout.trim()) {
-          deviceName = nameRes.value.stdout.trim();
-        } else {
-          deviceName = `${manufacturer} ${model}`;
-        }
-
-        if (verRes.status === 'fulfilled' && verRes.value.stdout.trim()) {
-          const rel = verRes.value.stdout.trim();
-          const sdk = sdkRes.status === 'fulfilled' ? sdkRes.value.stdout.trim() : '';
-          androidVersion = `Android ${rel}${sdk ? ` (API ${sdk})` : ''}`;
-        }
-
-        // Battery & Thermal parsing
-        if (batRes.status === 'fulfilled') {
-          const batTxt = batRes.value.stdout;
-          const levelMatch = batTxt.match(/level:\s*(\d+)/i);
-          const statusMatch = batTxt.match(/status:\s*(\d+)/i);
-          const tempMatch = batTxt.match(/temperature:\s*(\d+)/i);
-          const acMatch = batTxt.match(/AC powered:\s*true/i);
-          const usbMatch = batTxt.match(/USB powered:\s*true/i);
-          const wirelessMatch = batTxt.match(/Wireless powered:\s*true/i);
-
-          if (levelMatch && levelMatch[1]) {
-            batteryLevel = parseInt(levelMatch[1], 10);
-          }
-          if (statusMatch && statusMatch[1]) {
-            isCharging = parseInt(statusMatch[1], 10) === 2;
-          }
-          if (acMatch) chargingType = 'AC Adapter Fast Charge';
-          else if (usbMatch) chargingType = 'USB Data Port';
-          else if (wirelessMatch) chargingType = 'Qi Wireless Charging';
-          else chargingType = isCharging ? 'Charging' : 'Discharging (Battery)';
-
-          if (tempMatch && tempMatch[1]) {
-            const rawTemp = parseInt(tempMatch[1], 10);
-            temperature = rawTemp / 10;
-            if (temperature < 35) thermalStatus = 'Normal (Cool)';
-            else if (temperature < 42) thermalStatus = 'Warm';
-            else thermalStatus = 'Hot (High Load)';
-          }
-        }
-
-        // Storage Parsing
-        if (dfRes.status === 'fulfilled') {
-          const dfLines = dfRes.value.stdout.trim().split(/\r?\n/);
-          if (dfLines.length >= 2 && dfLines[1]) {
-            const dfParts = dfLines[1].trim().split(/\s+/);
-            if (dfParts.length >= 5) {
-              if (dfParts[1]) storageTotal = dfParts[1];
-              if (dfParts[3]) storageFree = dfParts[3];
-              if (dfParts[4]) storageUsedPercent = parseInt(dfParts[4].replace('%', ''), 10) || 50;
-            }
-          }
-        }
-
-        // RAM Parsing (/proc/meminfo)
-        if (memRes.status === 'fulfilled') {
-          const memTxt = memRes.value.stdout;
-          const totalMatch = memTxt.match(/MemTotal:\s*(\d+)/i);
-          const availMatch = memTxt.match(/MemAvailable:\s*(\d+)/i);
-
-          if (totalMatch && totalMatch[1] && availMatch && availMatch[1]) {
-            const totalKb = parseInt(totalMatch[1], 10);
-            const availKb = parseInt(availMatch[1], 10);
-            const usedKb = totalKb - availKb;
-
-            const totalGbVal = (totalKb / (1024 * 1024)).toFixed(1);
-            const usedGbVal = (usedKb / (1024 * 1024)).toFixed(1);
-
-            ramTotalGB = `${totalGbVal} GB`;
-            ramUsedGB = `${usedGbVal} GB`;
-            ramPercent = Math.round((usedKb / totalKb) * 100);
-          }
-        }
-
-        // Developer Settings Flags
-        if (devRes.status === 'fulfilled') {
-          developerMode = devRes.value.stdout.trim() === '1';
-        }
-        if (wlanRes.status === 'fulfilled') {
-          wirelessDebugging = wlanRes.value.stdout.trim() === '1';
-        }
-
-        // Hardware Serial Parsing
-        if (hwSerialRes.status === 'fulfilled' && hwSerialRes.value.stdout.trim()) {
-          hardwareSerial = hwSerialRes.value.stdout.trim();
-        } else if (!serial.includes(':')) {
-          hardwareSerial = serial;
-        }
-
-        // IP Address Parsing
-        if (ipRes.status === 'fulfilled' && !serial.includes(':')) {
-          const ipTxt = ipRes.value.stdout;
-          const ipMatch = ipTxt.match(/src\s+([\d.]+)/);
-          if (ipMatch && ipMatch[1]) {
-            ipAddress = ipMatch[1];
-          }
-        }
-
-        // Network Connection Type & Mobile Carrier Details
-        let hasWifiConnection = false;
-        if (wifiRes.status === 'fulfilled' && wifiRes.value.stdout) {
-          const wifiTxt = wifiRes.value.stdout;
-          const ssidMatch = wifiTxt.match(/SSID:\s*"?([^"\n\r]+)"?/i) || wifiTxt.match(/mWifiInfo\s+SSID:\s*"?([^"\n\r]+)"?/i);
-          const hasSsid = ssidMatch && ssidMatch[1] && !ssidMatch[1].includes('<unknown ssid>');
-          const isConnected = wifiTxt.includes('state: CONNECTED') || wifiTxt.includes('mNetworkInfo CONNECTED') || wifiTxt.includes('mNetworkInfo: CONNECTED/CONNECTED');
-          if (hasSsid || isConnected) {
-            hasWifiConnection = true;
-            networkType = 'wifi';
-            if (ssidMatch && ssidMatch[1]) {
-              networkSsid = ssidMatch[1].trim();
-            }
-          }
-        }
-
-        if (operatorRes.status === 'fulfilled' && operatorRes.value.stdout.trim()) {
-          const opName = operatorRes.value.stdout.trim();
-          if (opName && opName !== 'null' && opName !== '000-00' && opName !== '00000') {
-            carrierName = opName;
-          }
-        }
-
-        if (netTypeRes.status === 'fulfilled' && netTypeRes.value.stdout.trim()) {
-          const rawGen = netTypeRes.value.stdout.toLowerCase().trim();
-          if (rawGen && rawGen !== 'unknown' && rawGen !== 'none') {
-            if (rawGen.includes('nr') || rawGen.includes('5g')) {
-              cellularGeneration = '5G';
-            } else if (rawGen.includes('lte')) {
-              cellularGeneration = '4G LTE';
-            } else if (rawGen.includes('hspa') || rawGen.includes('umts') || rawGen.includes('3g')) {
-              cellularGeneration = '3G';
-            } else if (rawGen.includes('gsm') || rawGen.includes('edge') || rawGen.includes('gprs')) {
-              cellularGeneration = '2G';
-            } else {
-              cellularGeneration = rawGen.toUpperCase();
-            }
-          }
-        }
-
-        if (hasWifiConnection) {
-          networkType = 'wifi';
-        } else if (carrierName) {
-          networkType = 'cellular';
-          networkSsid = `${carrierName} ${cellularGeneration || ''}`.trim();
-        } else {
-          networkType = 'none';
-          networkSsid = undefined;
-        }
-      } catch (err) {
-        logger.warn(`Failed fetching detailed device specs for ${serial}`, 'ADBService', err);
-      }
-    }
-
-    const deviceModel: DeviceInfoModel = {
-      id: `dev_${serial.replace(/[^a-zA-Z0-9]/g, '_')}`,
-      serialNumber: serial,
-      deviceName,
-      model,
-      manufacturer,
-      androidVersion,
-      batteryLevel,
-      isCharging,
-      chargingType,
-      storageFree,
-      storageTotal,
-      storageUsedPercent,
-      cpuUsage,
-      cpuModel,
-      cpuCores,
-      ramUsedGB,
-      ramTotalGB,
-      ramPercent,
-      temperature,
-      thermalStatus,
-      networkSsid,
-      networkRssi,
-      networkType,
-      carrierName,
-      cellularGeneration,
-      connectionType,
-      ipAddress,
-      port,
-      status,
-      adbStatus,
-      developerMode,
-      wirelessDebugging,
-      hardwareSerial,
-      lastConnected: new Date().toISOString(),
-      isTrusted: true,
-    };
-
-    trustedDevicesService.saveDevice(deviceModel);
-
-    return deviceModel;
-  }
 
   private cachedRawDevicesTimestamp = 0;
   private cachedRawDevicesList: Array<{ serial: string; rawStatus: string; connectionType: 'usb' | 'wireless' }> = [];

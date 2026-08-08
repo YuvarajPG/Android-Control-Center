@@ -203,13 +203,13 @@ export const SettingsFeature: React.FC = () => {
             Stream & Video Quality
           </h3>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <Select
               label="Default Mirror Quality"
               options={[
-                { value: 'high', label: 'High (1080p, 8 Mbps)' },
-                { value: 'medium', label: 'Balanced (720p, 4 Mbps)' },
-                { value: 'low', label: 'Low Latency (480p, 2 Mbps)' },
+                { value: 'high', label: 'High (1080p, 16 Mbps)' },
+                { value: 'medium', label: 'Balanced (720p, 8 Mbps)' },
+                { value: 'low', label: 'Low Latency (480p, 4 Mbps)' },
               ]}
               value={settings.screenMirrorQuality}
               onChange={(e) => updateSettings({ screenMirrorQuality: e.target.value as any })}
@@ -218,12 +218,29 @@ export const SettingsFeature: React.FC = () => {
             <Select
               label="Frame Rate Cap (FPS)"
               options={[
-                { value: '60', label: '60 FPS (Smooth)' },
-                { value: '30', label: '30 FPS (Power Saving)' },
-                { value: '120', label: '120 FPS (High Refresh)' },
+                { value: '15', label: '15 FPS (Ultra Low)' },
+                { value: '30', label: '30 FPS (Power Saver)' },
+                { value: '60', label: '60 FPS (Smooth Standard)' },
+                { value: '90', label: '90 FPS (High Refresh)' },
+                { value: '120', label: '120 FPS (Ultra Refresh)' },
               ]}
               value={String(settings.screenFpsLimit)}
               onChange={(e) => updateSettings({ screenFpsLimit: Number(e.target.value) })}
+            />
+
+            <Select
+              label="Bitrate Limit (Mbps)"
+              options={[
+                { value: '2', label: '2 Mbps (Low Latency)' },
+                { value: '4', label: '4 Mbps (Standard)' },
+                { value: '8', label: '8 Mbps (Medium)' },
+                { value: '12', label: '12 Mbps (Enhanced)' },
+                { value: '16', label: '16 Mbps (High Quality)' },
+                { value: '24', label: '24 Mbps (Ultra High)' },
+                { value: '32', label: '32 Mbps (Maximum Quality)' },
+              ]}
+              value={String(settings.screenMirrorBitrate ?? 16)}
+              onChange={(e) => updateSettings({ screenMirrorBitrate: Number(e.target.value) })}
             />
           </div>
         </Card>

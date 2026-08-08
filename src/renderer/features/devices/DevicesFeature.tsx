@@ -286,8 +286,9 @@ export const DevicesFeature: React.FC = () => {
                       variant="ghost"
                       size="sm"
                       icon={<Trash2 className="h-3.5 w-3.5 text-m3-on-surface-variant hover:text-m3-error" />}
-                      onClick={() => {
-                        forgetDevice(device.serial);
+                      onClick={async () => {
+                        await forgetDevice(device.serial);
+                        await refreshDevices();
                         addToast('info', `Removed ${device.name || device.serial} from remembered devices`);
                       }}
                       title="Forget Remembered Device"

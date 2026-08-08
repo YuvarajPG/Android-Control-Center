@@ -36,8 +36,9 @@ export interface DeviceCapabilities {
   brightness: number;
   autoRotate: boolean;
   rotationDegree: number;
-  volumeLevel: number;
   flashlightActive: boolean;
+  isCompanionInstalled: boolean;
+  flashlightBackend: 'companion' | 'none';
 }
 
 export interface MediaInfo {
@@ -253,7 +254,14 @@ export const ipcService = {
       if (ipcService.isAvailable()) {
         return ipcService.invoke<DeviceCapabilities>('control:get-capabilities', serial);
       }
-      return { isRooted: true, hasShizuku: true, brightness: 180, autoRotate: true, rotationDegree: 0, volumeLevel: 70, flashlightActive: false };
+      return { isRooted: true, hasShizuku: true, brightness: 180, autoRotate: true, rotationDegree: 0, flashlightActive: false, isCompanionInstalled: false, flashlightBackend: 'none' };
+    },
+
+    async getBrightness(serial: string): Promise<number> {
+      if (ipcService.isAvailable()) {
+        return ipcService.invoke<number>('control:get-brightness', serial);
+      }
+      return 180;
     },
 
     async setBrightness(serial: string, level: number): Promise<{ success: boolean; message: string }> {
@@ -261,13 +269,6 @@ export const ipcService = {
         return ipcService.invoke('control:set-brightness', { serial, level });
       }
       return { success: true, message: `Brightness set to ${level}` };
-    },
-
-    async setVolume(serial: string, levelPercent: number): Promise<{ success: boolean; message: string }> {
-      if (ipcService.isAvailable()) {
-        return ipcService.invoke('control:set-volume', { serial, levelPercent });
-      }
-      return { success: true, message: `Volume set to ${levelPercent}%` };
     },
 
     async lock(serial: string): Promise<{ success: boolean; message: string }> {
@@ -719,6 +720,7 @@ export const ipcService = {
         autoConnectWireless: true,
         screenMirrorQuality: 'high',
         screenFpsLimit: 60,
+        screenMirrorBitrate: 16,
         autoCheckUpdates: true,
         logcatBufferSize: 500,
         themeMode: 'dark',
@@ -738,6 +740,7 @@ export const ipcService = {
         autoConnectWireless: true,
         screenMirrorQuality: 'high',
         screenFpsLimit: 60,
+        screenMirrorBitrate: 16,
         autoCheckUpdates: true,
         logcatBufferSize: 500,
         themeMode: 'dark',
@@ -758,6 +761,7 @@ export const ipcService = {
         autoConnectWireless: true,
         screenMirrorQuality: 'high',
         screenFpsLimit: 60,
+        screenMirrorBitrate: 16,
         autoCheckUpdates: true,
         logcatBufferSize: 500,
         themeMode: 'dark',

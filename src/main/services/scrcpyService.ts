@@ -79,13 +79,16 @@ export class ScrcpyService {
       this.decoder.start('h264');
 
       this.decoder.on('frame', (frame: Buffer) => {
+        logger.debug(`[Scrcpy] Frame decoded (${frame.length} bytes)`, 'ScrcpyService');
         this.broadcastFrame(frame);
         this.frameCount++;
       });
 
       this.transport = new ScrcpyTransport();
       this.transport.on('packet', (packet: Buffer) => {
+        logger.info(`[Scrcpy] PACKET RECEIVED (${packet.length} bytes)`, 'ScrcpyService');
         if (this.decoder) {
+          logger.info(`[Scrcpy] ENCODED CHUNK CREATED (${packet.length} bytes)`, 'ScrcpyService');
           this.decoder.write(packet);
         }
       });

@@ -158,31 +158,35 @@ export class ScreenService {
       this.activeRecordingProcess = false;
       const remoteVideo = '/sdcard/acc_screenrecord.mp4';
 
-      // 1. Kill screenrecord process on device
-      const pkillArgs = serial
-        ? ['-s', serial, 'shell', 'pkill', '-2', 'screenrecord']
-        : ['shell', 'pkill', '-2', 'screenrecord'];
+      // 1. Send SIGINT (kill -2) to screenrecord process on device
+      try {
+        const pidRes = await adbService.execAdb(
+          serial ? ['-s', serial, 'shell', 'pidof', 'screenrecord'] : ['shell', 'pidof', 'screenrecord']
+        ).catch(() => ({ stdout: '' }));
+        const pid = pidRes.stdout.trim();
+        if (pid) {
+          logger.info(`Sending SIGINT (kill -2 ${pid}) to screenrecord...`, 'ScreenService');
+          await adbService.execAdb(
+            serial ? ['-s', serial, 'shell', 'kill', '-2', pid] : ['shell', 'kill', '-2', pid]
+          ).catch(() => {});
+        } else {
+          await adbService.execAdb(
+            serial ? ['-s', serial, 'shell', 'pkill', '-2', 'screenrecord'] : ['shell', 'pkill', '-2', 'screenrecord']
+          ).catch(() => {});
+        }
+      } catch {
+        await adbService.execAdb(
+          serial ? ['-s', serial, 'shell', 'pkill', '-2', 'screenrecord'] : ['shell', 'pkill', '-2', 'screenrecord']
+        ).catch(() => {});
+      }
 
-      await adbService.execAdb(pkillArgs).catch(() => {});
+      // Wait 2 seconds for Android OS to flush MP4 container header (moov atom) to disk
+      logger.info('Waiting 2s for screenrecord to finalize MP4 file header on device...', 'ScreenService');
+      await new Promise((res) => setTimeout(res, 2000));
 
       if (this.activeRecordingPromise) {
-        logger.info('Waiting for screenrecord process to exit gracefully...', 'ScreenService');
         await this.activeRecordingPromise;
         this.activeRecordingPromise = null;
-      } else {
-        // Fallback check if it was started outside this instance
-        let isRunning = true;
-        let attempts = 0;
-        while (isRunning && attempts < 10) {
-          const psArgs = serial ? ['-s', serial, 'shell', 'ps', '-A'] : ['shell', 'ps', '-A'];
-          const psResult = await adbService.execAdb(psArgs).catch(() => ({ stdout: '' }));
-          if (!psResult.stdout.includes('screenrecord')) {
-            isRunning = false;
-          } else {
-            await new Promise(res => setTimeout(res, 500));
-            attempts++;
-          }
-        }
       }
 
       // 2. Prompt user for save destination

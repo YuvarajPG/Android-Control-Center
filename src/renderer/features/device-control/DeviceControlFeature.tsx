@@ -17,6 +17,8 @@ import {
 } from 'lucide-react';
 import { useDeviceStore } from '../../store/useDeviceStore';
 import { useAppStore } from '../../store/useAppStore';
+import { useRotationStore } from '../../store/useRotationStore';
+import { useCapabilitiesStore } from '../../store/useCapabilitiesStore';
 import { PageHeader } from '../../components/layout/PageHeader';
 import { Card } from '../../components/common/Card';
 import { BrightnessCardV2 } from '../../components/BrightnessCardV2/BrightnessCard';
@@ -25,30 +27,28 @@ import { Button } from '../../components/common/Button';
 import { Input } from '../../components/common/Input';
 import { Badge } from '../../components/common/Badge';
 import { Modal } from '../../components/common/Modal';
-import { ipcService, DeviceCapabilities } from '../../services/ipcService';
+import { Tooltip } from '../../components/common/Tooltip';
+import { ipcService } from '../../services/ipcService';
+
+function formatAndroidVersion(versionStr?: string, apiLevel?: string | number): string {
+  if (!versionStr) return `Android 13 (API ${apiLevel || '33'})`;
+  const cleanVer = versionStr.replace(/^android\s*/i, '').replace(/\s*\(API.*?\)/i, '').trim();
+  const api = apiLevel || (versionStr.match(/API\s*(\d+)/i)?.[1]) || '';
+  return `Android ${cleanVer}${api ? ` (API ${api})` : ''}`;
+}
 
 export const DeviceControlFeature: React.FC = () => {
   const { getSelectedDevice } = useDeviceStore();
   const { addToast } = useAppStore();
+  const { getCapabilities, fetchCapabilities } = useCapabilitiesStore();
   const device = getSelectedDevice();
-
-  const [capabilities, setCapabilities] = useState<DeviceCapabilities>({
-    isRooted: false,
-    hasShizuku: false,
-    brightness: 180,
-    autoRotate: true,
-    rotationDegree: 0,
-    volumeLevel: 70,
-    flashlightActive: false,
-  });
 
   const [clipboardText, setClipboardText] = useState<string>('');
   const [lastClipboardUpdate, setLastClipboardUpdate] = useState<Date | null>(null);
   const [flashlightOn, setFlashlightOn] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Rotation state — separate from capabilities so it's always in sync with device
-  const [rotationLoading, setRotationLoading] = useState<boolean>(false);
+  const { getRotationState, isRotationLoading, fetchRotation, setRotation } = useRotationStore();
 
   // Wireless pairing modal state
   const [isPairModalOpen, setIsPairModalOpen] = useState<boolean>(false);
@@ -86,19 +86,24 @@ export const DeviceControlFeature: React.FC = () => {
     [device],
   );
 
+  const serial = getSerial();
+  const capabilities = getCapabilities(serial);
+  const rotationState = getRotationState(serial);
+  const rotationLoading = isRotationLoading(serial);
+
   // Fetch device capabilities
   const [isInputFocused, setIsInputFocused] = useState<boolean>(false);
 
   const loadCapabilities = useCallback(async () => {
-    const serial = getSerial();
-    if (!serial) return;
+    const s = getSerial();
+    if (!s) return;
     setIsLoading(true);
     try {
-      const caps = await ipcService.control.getCapabilities(serial);
-      setCapabilities(caps);
+      await fetchCapabilities(s);
+      const caps = getCapabilities(s);
       setFlashlightOn(caps.flashlightActive);
 
-      const clip = await ipcService.control.getClipboard(serial);
+      const clip = await ipcService.control.getClipboard(s);
       if (clip && clip.trim() && !isInputFocused) {
         setClipboardText(clip);
         setLastClipboardUpdate(new Date());
@@ -108,59 +113,39 @@ export const DeviceControlFeature: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [addToast, getSerial, isInputFocused]);
+  }, [addToast, fetchCapabilities, getCapabilities, getSerial, isInputFocused]);
 
+  // Fetch capabilities ONLY on connection/mount or manual refresh (NO continuous polling)
   useEffect(() => {
     loadCapabilities();
   }, [loadCapabilities]);
 
+  // Rotation Sync & Polling: Fetch on mount and poll every 5s
   useEffect(() => {
-    const capsInterval = setInterval(() => {
+    const s = getSerial();
+    if (!s) return;
+
+    fetchRotation(s);
+    const rotationInterval = setInterval(() => {
       if (document.visibilityState === 'visible') {
-        loadCapabilities();
+        fetchRotation(s);
       }
-    }, 10000);
+    }, 5000);
 
-    const refreshOnReturn = () => {
-      if (document.visibilityState === 'visible') {
-        loadCapabilities();
-      }
-    };
-
-    window.addEventListener('focus', refreshOnReturn);
-    document.addEventListener('visibilitychange', refreshOnReturn);
-
-    return () => {
-      clearInterval(capsInterval);
-      window.removeEventListener('focus', refreshOnReturn);
-      document.removeEventListener('visibilitychange', refreshOnReturn);
-    };
-  }, [loadCapabilities]);
+    return () => clearInterval(rotationInterval);
+  }, [getSerial, fetchRotation]);
 
   /**
-   * Rotation: send command then VERIFY the device's actual state.
+   * Rotation: send command then update store
    */
   const handleRotate = async (autoRotate: boolean, degree: number = 0) => {
-    const serial = getSerial();
-    setRotationLoading(true);
-    try {
-      const res = await ipcService.control.rotate(serial, autoRotate, degree);
-      if (res.success) {
-        await new Promise((r) => setTimeout(r, 350));
-        const verified = await ipcService.control.getRotation(serial);
-        setCapabilities((prev) => ({
-          ...prev,
-          autoRotate: verified.autoRotate,
-          rotationDegree: verified.rotationDegree,
-        }));
-        addToast('success', res.message);
-      } else {
-        addToast('warning', res.message);
-      }
-    } catch (err: any) {
-      addToast('error', `Rotation failed: ${err.message}`);
-    } finally {
-      setRotationLoading(false);
+    const s = getSerial();
+    if (!s) return;
+    const res = await setRotation(s, autoRotate, degree);
+    if (res.success) {
+      addToast('success', res.message);
+    } else {
+      addToast('warning', res.message);
     }
   };
 
@@ -282,7 +267,6 @@ export const DeviceControlFeature: React.FC = () => {
     }
   };
 
-  const serial = getSerial();
   const isWifiConnection = ((device as any)?.connectionType === 'wifi') || (device?.serialNumber?.includes(':') || device?.serial?.includes(':') || false);
 
   return (
@@ -347,7 +331,7 @@ export const DeviceControlFeature: React.FC = () => {
                     {device?.name || device?.model || 'Android Target Device'}
                   </h3>
                   <span className="text-[11px] font-mono text-m3-on-surface-variant/80 bg-m3-surface-3 px-2 py-0.5 rounded-m3-sm border border-m3-surface-4">
-                    Android {device?.androidVersion || '13'} (API {(device as any)?.apiLevel || '33'})
+                    {formatAndroidVersion(device?.androidVersion, (device as any)?.apiLevel)}
                   </span>
                 </div>
                 <p className="text-xs text-m3-on-surface-variant font-mono mt-0.5">
@@ -411,16 +395,16 @@ export const DeviceControlFeature: React.FC = () => {
                 <RotateCw className={`h-4.5 w-4.5 text-m3-secondary ${rotationLoading ? 'animate-spin' : ''}`} />
                 Screen Rotation
               </h3>
-              <Badge variant={capabilities.autoRotate ? 'success' : 'neutral'} className={capabilities.autoRotate ? 'animate-pulse' : ''}>
-                {capabilities.autoRotate
+              <Badge variant={rotationState.autoRotate ? 'success' : 'neutral'} className={rotationState.autoRotate ? 'animate-pulse' : ''}>
+                {rotationState.autoRotate
                   ? 'AUTO-ROTATE ON'
-                  : `LOCKED · ${capabilities.rotationDegree === 0 ? 'Portrait' : capabilities.rotationDegree === 90 ? 'Landscape' : 'Reverse'}`}
+                  : `LOCKED · ${rotationState.rotationDegree === 0 ? 'Portrait' : rotationState.rotationDegree === 90 ? 'Landscape' : 'Reverse'}`}
               </Badge>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
               <Button
-                variant={capabilities.autoRotate ? 'filled' : 'outlined'}
+                variant={rotationState.autoRotate ? 'filled' : 'outlined'}
                 size="sm"
                 disabled={rotationLoading}
                 onClick={() => handleRotate(true, 0)}
@@ -429,7 +413,7 @@ export const DeviceControlFeature: React.FC = () => {
                 Auto Rotate
               </Button>
               <Button
-                variant={!capabilities.autoRotate && capabilities.rotationDegree === 0 ? 'filled' : 'outlined'}
+                variant={!rotationState.autoRotate && rotationState.rotationDegree === 0 ? 'filled' : 'outlined'}
                 size="sm"
                 disabled={rotationLoading}
                 onClick={() => handleRotate(false, 0)}
@@ -438,7 +422,7 @@ export const DeviceControlFeature: React.FC = () => {
                 0° Portrait
               </Button>
               <Button
-                variant={!capabilities.autoRotate && capabilities.rotationDegree === 90 ? 'filled' : 'outlined'}
+                variant={!rotationState.autoRotate && rotationState.rotationDegree === 90 ? 'filled' : 'outlined'}
                 size="sm"
                 disabled={rotationLoading}
                 onClick={() => handleRotate(false, 90)}
@@ -447,7 +431,7 @@ export const DeviceControlFeature: React.FC = () => {
                 90° Landscape
               </Button>
               <Button
-                variant={!capabilities.autoRotate && capabilities.rotationDegree === 270 ? 'filled' : 'outlined'}
+                variant={!rotationState.autoRotate && rotationState.rotationDegree === 270 ? 'filled' : 'outlined'}
                 size="sm"
                 disabled={rotationLoading}
                 onClick={() => handleRotate(false, 270)}
@@ -537,28 +521,44 @@ export const DeviceControlFeature: React.FC = () => {
 
           {/* 6. Hardware Flashlight Card */}
           <Card variant="surface-1" className="p-5 space-y-3 border border-m3-surface-3 shadow-sm hover:shadow-m3-1 transition-all">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <h3 className="text-sm font-bold text-m3-on-surface flex items-center gap-2">
                 <Zap className="h-4.5 w-4.5 text-m3-warning" /> Flashlight / Torch
               </h3>
-              <Badge variant={flashlightOn ? 'success' : 'neutral'} className={flashlightOn ? 'animate-pulse' : ''}>
-                {flashlightOn ? 'TORCH ON' : 'OFF'}
-              </Badge>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-m3-on-surface-variant font-medium">Flashlight Backend:</span>
+                <Badge variant={capabilities.isCompanionInstalled ? 'success' : 'warning'}>
+                  {capabilities.isCompanionInstalled ? 'Companion App' : 'Unavailable'}
+                </Badge>
+                {capabilities.isCompanionInstalled && (
+                  <Badge variant={flashlightOn ? 'success' : 'neutral'} className={flashlightOn ? 'animate-pulse' : ''}>
+                    {flashlightOn ? 'TORCH ON' : 'OFF'}
+                  </Badge>
+                )}
+              </div>
             </div>
 
             <p className="text-xs text-m3-on-surface-variant">
-              Controls hardware camera LED flashlight. Operates without opening terminal commands.
+              Controls hardware camera LED flashlight via official Android CameraManager API provided by ACC Companion (<code className="font-mono text-m3-primary">com.acc.companion</code>).
             </p>
 
-            <Button
-              variant={flashlightOn ? 'filled' : 'outlined'}
-              size="sm"
-              icon={<Zap className="h-4 w-4" />}
-              onClick={handleFlashlightToggle}
-              className="w-full justify-center font-medium"
+            <Tooltip
+              content={!capabilities.isCompanionInstalled ? "Install Android Control Center Companion to enable flashlight control." : ""}
+              position="top"
             >
-              {flashlightOn ? 'Turn Flashlight OFF' : 'Turn Flashlight ON'}
-            </Button>
+              <div className="w-full">
+                <Button
+                  variant={flashlightOn ? 'filled' : 'outlined'}
+                  size="sm"
+                  icon={<Zap className="h-4 w-4" />}
+                  onClick={handleFlashlightToggle}
+                  disabled={!capabilities.isCompanionInstalled}
+                  className="w-full justify-center font-medium"
+                >
+                  {flashlightOn ? 'Turn Flashlight OFF' : 'Turn Flashlight ON'}
+                </Button>
+              </div>
+            </Tooltip>
           </Card>
 
           {/* 7. System Power & Advanced Actions Card */}

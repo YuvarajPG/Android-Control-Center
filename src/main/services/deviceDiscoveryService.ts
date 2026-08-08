@@ -165,11 +165,21 @@ export class DeviceDiscoveryService {
     return { success: false, devices: this.cachedDevices };
   }
 
-  public startDiscovery(): void {
+  public startDiscovery(intervalMs: number = 10000): void {
+    logger.info('[Polling] Device discovery started (10s)', 'DeviceDiscoveryService');
     this.startBoundedDiscoverySession(undefined, false);
+    if (!this.discoveryInterval) {
+      this.discoveryInterval = setInterval(() => {
+        this.scanDevices().catch(() => {});
+      }, intervalMs);
+    }
   }
 
   public stopDiscovery(): void {
+    if (this.discoveryInterval) {
+      clearInterval(this.discoveryInterval);
+      this.discoveryInterval = null;
+    }
     this.currentDiscoverySessionId++;
     this.isDiscoveryActive = false;
   }
@@ -229,10 +239,21 @@ export class DeviceDiscoveryService {
     return false;
   }
 
+  private lastRawSerialsKey: string = '';
+
+  private hasRawSerialsChanged(rawList: { serial: string; rawStatus: string; connectionType: 'usb' | 'wireless' }[]): boolean {
+    const currentKey = rawList.map((r) => `${r.serial}:${r.rawStatus}:${r.connectionType}`).sort().join('|');
+    if (currentKey === this.lastRawSerialsKey) {
+      return false;
+    }
+    this.lastRawSerialsKey = currentKey;
+    return true;
+  }
+
   /**
    * Core discovery scan method: Groups USB and Wireless into UNIFIED physical device objects.
    */
-  public async scanDevices(): Promise<DeviceInfoModel[]> {
+  public async scanDevices(forceRefresh: boolean = false): Promise<DeviceInfoModel[]> {
     if (this.isScanning) return this.cachedDevices;
     this.isScanning = true;
 
@@ -240,6 +261,14 @@ export class DeviceDiscoveryService {
       const rawList = await adbService.listRawDevices();
       this.adbFailCount = 0;
 
+      // If raw serials list is unchanged and not forceRefresh, return cached devices immediately
+      if (!forceRefresh && !this.hasRawSerialsChanged(rawList) && this.cachedDevices.length > 0) {
+        logger.debug('[Polling] Device discovery (10s) — raw serials unchanged, using cache', 'DeviceDiscoveryService');
+        this.isScanning = false;
+        return this.cachedDevices;
+      }
+
+      logger.info('[Polling] Device discovery (10s) — updating device list', 'DeviceDiscoveryService');
       const trustedList = trustedDevicesService.getAll();
       const currentDevices: DeviceInfoModel[] = [];
       const currentActiveSerials = new Set<string>();

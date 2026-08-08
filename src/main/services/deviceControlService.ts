@@ -27,53 +27,15 @@ function cleanPrimitiveString(val: any): string {
  * - "volume=5 max=15"
  * - "5/15"
  */
-function parseVolumeOutput(stdout: string): { currentStep: number; maxStep: number; volumePercent: number } | null {
-  if (!stdout) return null;
-
-  // Format 1: "volume is 5 in range [0..15]" or "volume is 5 / 15" or "volume is 5 in range [1..15]"
-  const match1 = stdout.match(/volume\s+is\s+(\d+)(?:\s+in\s+range\s*\[\d+\.\.(\d+)\]|\s*\/\s*(\d+))/i);
-  if (match1) {
-    const cur = parseInt(match1[1], 10);
-    const max = parseInt(match1[2] || match1[3], 10);
-    if (max > 0) return { currentStep: cur, maxStep: max, volumePercent: Math.round((cur / max) * 100) };
-  }
-
-  // Format 2: "volume=5 max=15" or "volume: 5 max: 15"
-  const match2 = stdout.match(/volume\s*[:=]\s*(\d+)[\s,]+max\s*[:=]\s*(\d+)/i);
-  if (match2) {
-    const cur = parseInt(match2[1], 10);
-    const max = parseInt(match2[2], 10);
-    if (max > 0) return { currentStep: cur, maxStep: max, volumePercent: Math.round((cur / max) * 100) };
-  }
-
-  // Format 3: "Current volume: 5" or "Current: 5 ... Max: 15"
-  const curMatch = stdout.match(/Current(?:\s+volume)?\s*[:=]\s*(\d+)/i);
-  const maxMatch = stdout.match(/Max(?:\s+volume)?\s*[:=]\s*(\d+)/i);
-  if (curMatch && maxMatch) {
-    const cur = parseInt(curMatch[1], 10);
-    const max = parseInt(maxMatch[1], 10);
-    if (max > 0) return { currentStep: cur, maxStep: max, volumePercent: Math.round((cur / max) * 100) };
-  }
-
-  // Format 4: "5/15"
-  const match4 = stdout.match(/(\d+)\s*\/\s*(\d+)/);
-  if (match4) {
-    const cur = parseInt(match4[1], 10);
-    const max = parseInt(match4[2], 10);
-    if (max > 0 && max >= cur) return { currentStep: cur, maxStep: max, volumePercent: Math.round((cur / max) * 100) };
-  }
-
-  return null;
-}
-
 export interface DeviceCapabilities {
   isRooted: boolean;
   hasShizuku: boolean;
   brightness: number;
   autoRotate: boolean;
   rotationDegree: number;
-  volumeLevel: number;
   flashlightActive: boolean;
+  isCompanionInstalled: boolean;
+  flashlightBackend: 'companion' | 'none';
 }
 
 export interface MediaSessionInfo {
@@ -277,7 +239,7 @@ export class DeviceControlService {
   public async getCapabilities(serial: string): Promise<DeviceCapabilities> {
     const activeSerial = await adbService.resolveActiveSerial(serial);
     if (!activeSerial) {
-      return { isRooted: false, hasShizuku: false, brightness: 180, autoRotate: true, rotationDegree: 0, volumeLevel: 70, flashlightActive: false };
+      return { isRooted: false, hasShizuku: false, brightness: 180, autoRotate: true, rotationDegree: 0, flashlightActive: false, isCompanionInstalled: false, flashlightBackend: 'none' };
     }
 
     let cachedCap = immutableCapCache.get(activeSerial);
@@ -322,7 +284,6 @@ export class DeviceControlService {
     let brightness = 180;
     let autoRotate = true;
     let rotationDegree = 0;
-    let volumeLevel = 70;
     let flashlightActive = false;
 
     // Brightness Reading
@@ -346,16 +307,6 @@ export class DeviceControlService {
       rotationDegree = 0;
     }
 
-    // Volume Reading
-    try {
-      const media = await this.getMediaInfo(activeSerial);
-      if (media && media.volumeLevel !== undefined) {
-        volumeLevel = media.volumeLevel;
-      }
-    } catch {
-      volumeLevel = 70;
-    }
-
     // Flashlight State Verification
     try {
       const { stdout: statusOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'dumpsys', 'statusbar']);
@@ -364,14 +315,26 @@ export class DeviceControlService {
       flashlightActive = false;
     }
 
+    // ACC Companion App Detection (com.acc.companion)
+    let isCompanionInstalled = false;
+    try {
+      const { stdout: pkgOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'pm', 'list', 'packages', 'com.acc.companion']);
+      if (pkgOut.includes('package:com.acc.companion')) {
+        isCompanionInstalled = true;
+      }
+    } catch {
+      isCompanionInstalled = false;
+    }
+
     return {
       isRooted: cachedCap.isRooted,
       hasShizuku: cachedCap.hasShizuku,
       brightness,
       autoRotate,
       rotationDegree,
-      volumeLevel,
       flashlightActive,
+      isCompanionInstalled,
+      flashlightBackend: isCompanionInstalled ? 'companion' : 'none',
     };
   }
 
@@ -414,6 +377,25 @@ export class DeviceControlService {
   }
 
   /**
+   * Get Screen Brightness (`settings get system screen_brightness`)
+   */
+  public async getBrightness(serial: string): Promise<number> {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return 180;
+
+    try {
+      const { stdout: brightOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'settings', 'get', 'system', 'screen_brightness']);
+      const parsedBright = parseInt(brightOut.trim(), 10);
+      if (!isNaN(parsedBright)) {
+        return Math.max(0, Math.min(255, parsedBright));
+      }
+    } catch {
+      // ignore
+    }
+    return 180;
+  }
+
+  /**
    * Screen Brightness Control (`settings put system screen_brightness <val>`)
    */
   public async setBrightness(serial: string, level: number): Promise<{ success: boolean; message: string }> {
@@ -425,10 +407,6 @@ export class DeviceControlService {
 
     try {
       await adbService.execAdb(['-s', activeSerial, 'shell', 'settings', 'put', 'system', 'screen_brightness', clampedLevel.toString()]);
-      const { stdout: verifyOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'settings', 'get', 'system', 'screen_brightness']);
-      const verifiedVal = parseInt(verifyOut.trim(), 10);
-
-      logger.info(`Brightness VERIFIED for ${activeSerial}: set=${clampedLevel}, readback=${verifiedVal}`, 'DeviceControlService');
       return { success: true, message: 'Screen brightness updated.' };
     } catch (err: any) {
       logger.error(`Failed setting brightness: ${err.message}`, 'DeviceControlService', err);
@@ -436,36 +414,7 @@ export class DeviceControlService {
     }
   }
 
-  /**
-   * Stream Music Volume Control
-   */
-  public async setVolume(serial: string, levelPercent: number): Promise<{ success: boolean; message: string }> {
-    const activeSerial = await adbService.resolveActiveSerial(serial);
-    if (!activeSerial) return { success: false, message: 'No active device connected' };
 
-    const clampedPercent = Math.max(0, Math.min(100, levelPercent));
-    logger.info(`Setting stream music volume to ${clampedPercent}% for ${activeSerial}`, 'DeviceControlService');
-
-    try {
-      let maxStep = 15;
-      try {
-        const { stdout: volOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'media', 'volume', '--stream', '3', '--get']);
-        const parsed = parseVolumeOutput(volOut);
-        if (parsed) maxStep = parsed.maxStep;
-      } catch {
-        maxStep = 15;
-      }
-
-      const targetStep = Math.round((clampedPercent / 100) * maxStep);
-      await adbService.execAdb(['-s', activeSerial, 'shell', 'media', 'volume', '--stream', '3', '--set', targetStep.toString()]);
-
-      logger.info(`Volume VERIFIED for ${activeSerial}: targetStep=${targetStep}/${maxStep} (${clampedPercent}%)`, 'DeviceControlService');
-      return { success: true, message: `Volume set to ${clampedPercent}%` };
-    } catch (err: any) {
-      logger.error(`Failed setting volume: ${err.message}`, 'DeviceControlService', err);
-      return { success: false, message: `Failed setting volume: ${err.message}` };
-    }
-  }
 
   /**
    * Screen Lock (`input keyevent 26` - Power Button)
@@ -795,33 +744,6 @@ export class DeviceControlService {
 
       const isPlaying = playbackState === 'playing';
 
-      // SINGLE Volume Reading (No duplicate reads, no invalid this.adb)
-      let currentStep = 5;
-      let maxStep = 15;
-      let volumeLevel = 33;
-
-      try {
-        const { stdout: volOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'media', 'volume', '--stream', '3', '--get']);
-        const parsedVol = parseVolumeOutput(volOut);
-        if (parsedVol) {
-          currentStep = parsedVol.currentStep;
-          maxStep = parsedVol.maxStep;
-          volumeLevel = parsedVol.volumePercent;
-        } else {
-          // Fallback: dumpsys audio
-          const { stdout: audioOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'dumpsys', 'audio']);
-          const musicSection = audioOut.split(/- STREAM_MUSIC:/i)[1] || audioOut;
-          const parsedAudio = parseVolumeOutput(musicSection);
-          if (parsedAudio) {
-            currentStep = parsedAudio.currentStep;
-            maxStep = parsedAudio.maxStep;
-            volumeLevel = parsedAudio.volumePercent;
-          }
-        }
-      } catch {
-        // Fallback default
-      }
-
       // Stable track identifier for caching
       const trackIdentifier = `${playerPackage}/${title}/${artist}`;
       const cached = trackMetadataCache.get(activeSerial);
@@ -1070,9 +992,6 @@ async function fetchOnlineMetadata(title: string, artist?: string, playerPackage
         artist,
         album,
         playerPackage: resolvedAppLabel,
-        volumeLevel,
-        currentStep,
-        maxStep,
         positionMs,
         durationMs,
         artworkUrl,
@@ -1206,67 +1125,51 @@ async function fetchOnlineMetadata(title: string, artist?: string, playerPackage
 
     logger.info(`Toggling flashlight enable=${enable} for ${activeSerial}`, 'DeviceControlService');
 
-    const stateArg = enable ? 'on' : 'off';
-    const modeVal = enable ? '1' : '0';
-    let commandExecuted = false;
-
-    // Method 1: CameraManager cmd media_camera / cmd camera set-torch-mode
+    // Method 1: Quick Settings tile click (cmd statusbar click-tile flashlight)
     try {
-      const { stderr } = await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'media_camera', 'set-torch-mode', '0', modeVal]);
-      if (!stderr.includes('Unknown command') && !stderr.includes('Error')) {
-        commandExecuted = true;
+      const { stderr } = await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'statusbar', 'click-tile', 'flashlight']);
+      if (!stderr || !stderr.toLowerCase().includes('error')) {
+        logger.info(`Flashlight toggled via cmd statusbar click-tile flashlight for ${activeSerial}`, 'DeviceControlService');
       }
     } catch (e: any) {
-      logger.debug(`cmd media_camera set-torch-mode failed: ${e.message}`, 'DeviceControlService');
+      logger.debug(`cmd statusbar click-tile flashlight failed: ${e.message}`, 'DeviceControlService');
     }
 
-    if (!commandExecuted) {
-      try {
-        const { stderr } = await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'camera', 'set-torch-mode', modeVal]);
-        if (!stderr.includes('Unknown command') && !stderr.includes('Error')) {
-          commandExecuted = true;
-        }
-      } catch (e: any) {
-        logger.debug(`cmd camera set-torch-mode failed: ${e.message}`, 'DeviceControlService');
-      }
-    }
-
-    // Method 2: cmd statusbar flashlight
-    if (!commandExecuted) {
-      try {
-        await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'statusbar', 'flashlight', stateArg]);
-        commandExecuted = true;
-      } catch (e: any) {
-        logger.debug(`cmd statusbar flashlight failed: ${e.message}`, 'DeviceControlService');
-      }
-    }
-
-    // Method 3: Direct sysfs LED write (Root fallback)
-    if (!commandExecuted) {
-      try {
-        await adbService.execAdb(['-s', activeSerial, 'shell', 'su', '-c', `echo ${enable ? '255' : '0'} > /sys/class/leds/flashlight/brightness`]);
-        commandExecuted = true;
-      } catch {
-        // ignore
-      }
-    }
-
-    // Verification Step: Read actual torch state from dumpsys statusbar
+    // Method 2: System Intent broadcasts
     try {
-      const { stdout: statusOut } = await adbService.execAdb(['-s', activeSerial, 'shell', 'dumpsys', 'statusbar']);
-      const isFlashlightOn = statusOut.includes('mFlashlightEnabled=true') || statusOut.includes('flashlight=true') || statusOut.includes('FlashlightController: true');
-
-      logger.info(`Flashlight toggle VERIFIED for ${activeSerial}: isFlashlightOn=${isFlashlightOn}`, 'DeviceControlService');
-      return {
-        success: true,
-        message: `Flashlight turned ${enable ? 'ON' : 'OFF'} (Verified: ${isFlashlightOn ? 'Active' : 'Inactive'}).`,
-      };
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'am', 'broadcast', '-a', 'android.intent.action.SET_FLASHLIGHT', '--ez', 'state', enable ? 'true' : 'false']).catch(() => {});
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'am', 'broadcast', '-a', 'com.android.systemui.statusbar.toggleFlashlight']).catch(() => {});
     } catch {
-      return {
-        success: true,
-        message: `Flashlight command '${stateArg.toUpperCase()}' sent to device.`,
-      };
+      // ignore
     }
+
+    // Method 3: Flashlight Keyevent (input keyevent 268)
+    try {
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'input', 'keyevent', '268']).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    // Method 4: CameraManager (cmd camera set-torch-mode)
+    try {
+      const modeVal = enable ? '1' : '0';
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'cmd', 'camera', 'set-torch-mode', modeVal]).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    // Method 5: Root sysfs LED write fallback
+    try {
+      const brightness = enable ? '255' : '0';
+      await adbService.execAdb(['-s', activeSerial, 'shell', 'su', '-c', `echo ${brightness} > /sys/class/leds/flashlight/brightness || echo ${brightness} > /sys/class/leds/torch-light/brightness`]).catch(() => {});
+    } catch {
+      // ignore
+    }
+
+    return {
+      success: true,
+      message: `Flashlight toggled ${enable ? 'ON' : 'OFF'} successfully.`,
+    };
   }
 
   /**

@@ -1,104 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { ipcService } from '../../../services/ipcService';
-import { MediaControlAction, MediaSessionData, PlaybackState } from '../types';
+import { useCallback, useEffect } from 'react';
+import { useMediaStore } from '../../../store/useMediaStore';
+import { MediaControlAction } from '../types';
 import { MEDIA_POLL_INTERVAL_MS } from '../constants';
 
 export function useMediaSession(serial: string) {
-  const [session, setSession] = useState<MediaSessionData | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+  const { session, fetchMediaSession, sendMediaControl } = useMediaStore();
 
-  const emptyPollCountRef = useRef<number>(0);
-
-  const fetchSession = useCallback(async () => {
-    if (!serial) {
-      setSession(null);
-      return;
-    }
-
-    try {
-      setIsLoading(true);
-      const media = await ipcService.control.getMediaInfo(serial);
-      if (media && (media.title || media.artist || media.album)) {
-        emptyPollCountRef.current = 0;
-        setSession((prev) => {
-          const newTitle = media.title?.trim() || '';
-          const newArtist = media.artist?.trim() || '';
-          const sameTrack = Boolean(newTitle && prev?.title === newTitle);
-
-          const title = newTitle || (sameTrack ? prev?.title : '') || 'Unknown title';
-          const artist = newArtist || (sameTrack ? prev?.artist : '') || 'Unknown artist';
-
-          const duration = media.durationMs && media.durationMs > 0
-            ? media.durationMs
-            : (sameTrack && prev?.duration && prev.duration > 0 ? prev.duration : 0);
-
-          const album = media.album && media.album.toLowerCase() !== 'unknown album'
-            ? media.album
-            : (sameTrack && prev?.album ? prev.album : 'Unknown album');
-
-          const artwork = media.artworkUrl || (sameTrack ? prev?.artwork : undefined);
-
-          let state: PlaybackState = 'stopped';
-          const rawState = String(media.playbackState || '').toLowerCase();
-          if (media.isPlaying || rawState.includes('play') || rawState === '3') {
-            state = 'playing';
-          } else if (rawState.includes('pause') || rawState === '2') {
-            state = 'paused';
-          } else if (rawState.includes('buffer') || rawState === '6') {
-            state = 'buffering';
-          }
-
-          return {
-            title,
-            artist,
-            album,
-            artwork,
-            duration,
-            position: media.positionMs ?? 0,
-            playbackState: state,
-            packageName: media.playerPackage,
-            playbackSpeed: (media as any).playbackSpeed || 1.0,
-          };
-        });
-      } else {
-        emptyPollCountRef.current += 1;
-        if (emptyPollCountRef.current >= 3) {
-          setSession(null);
-        }
-      }
-    } catch {
-      emptyPollCountRef.current += 1;
-      if (emptyPollCountRef.current >= 3) {
-        setSession(null);
-      }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [serial]);
+  const refreshSession = useCallback(() => {
+    if (serial) fetchMediaSession(serial);
+  }, [serial, fetchMediaSession]);
 
   const sendControl = useCallback(
-    async (action: MediaControlAction) => {
-      if (!serial) return;
-      try {
-        await ipcService.control.media(serial, action);
-        setTimeout(fetchSession, 300);
-      } catch {
-        // Silently handle control failure
-      }
+    (action: MediaControlAction) => {
+      if (serial) sendMediaControl(serial, action);
     },
-    [serial, fetchSession],
+    [serial, sendMediaControl],
   );
 
   useEffect(() => {
-    fetchSession();
-    const interval = setInterval(fetchSession, MEDIA_POLL_INTERVAL_MS);
+    refreshSession();
+    const interval = setInterval(refreshSession, MEDIA_POLL_INTERVAL_MS);
     return () => clearInterval(interval);
-  }, [fetchSession]);
+  }, [refreshSession]);
 
   return {
     session,
-    isLoading,
-    refreshSession: fetchSession,
+    isLoading: false,
+    refreshSession,
     sendControl,
   };
 }

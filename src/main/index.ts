@@ -85,8 +85,8 @@ mainWindow.webContents.on("did-finish-load", () => {
   // Register main IPC handlers
   registerIpcHandlers();
 
-  // Start automatic background device discovery & auto-reconnect service
-  deviceDiscoveryService.startDiscovery(3000);
+  // Start automatic background device discovery & auto-reconnect service (10s interval)
+  deviceDiscoveryService.startDiscovery(10000);
 
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[MAIN] Page finished loading');

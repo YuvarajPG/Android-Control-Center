@@ -58,7 +58,9 @@ export function registerDeviceHandlers(): void {
   // Forget a trusted device
   ipcMain.handle('device:forget-trusted', async (_event, serial: string) => {
     trustedDevicesService.removeDevice(serial);
-    return deviceDiscoveryService.scanDevices();
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer('device:list-updated', updated);
+    return updated;
   });
 
   // Set preferred transport for unified device

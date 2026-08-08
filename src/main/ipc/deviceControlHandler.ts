@@ -9,15 +9,17 @@ export function registerDeviceControlHandlers(): void {
     return deviceControlService.getCapabilities(serial);
   });
 
+  // Get Brightness
+  ipcMain.handle('control:get-brightness', async (_event, serial: string) => {
+    return deviceControlService.getBrightness(serial);
+  });
+
   // Set Brightness
   ipcMain.handle('control:set-brightness', async (_event, payload: { serial: string; level: number }) => {
     return deviceControlService.setBrightness(payload.serial, payload.level);
   });
 
-  // Set Stream Music Volume
-  ipcMain.handle('control:set-volume', async (_event, payload: { serial: string; levelPercent: number }) => {
-    return deviceControlService.setVolume(payload.serial, payload.levelPercent);
-  });
+
 
   // Lock Screen
   ipcMain.handle('control:lock', async (_event, serial: string) => {

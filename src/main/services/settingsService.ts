@@ -7,6 +7,7 @@ export interface AppSettingsSchema {
   autoConnectWireless: boolean;
   screenMirrorQuality: 'high' | 'medium' | 'low';
   screenFpsLimit: number;
+  screenMirrorBitrate: number;
   autoCheckUpdates: boolean;
   logcatBufferSize: number;
   themeMode: 'dark' | 'black';
@@ -18,6 +19,7 @@ const defaultSettings: AppSettingsSchema = {
   autoConnectWireless: true,
   screenMirrorQuality: 'high',
   screenFpsLimit: 60,
+  screenMirrorBitrate: 16,
   autoCheckUpdates: true,
   logcatBufferSize: 500,
   themeMode: 'dark',

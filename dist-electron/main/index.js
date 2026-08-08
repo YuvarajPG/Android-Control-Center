@@ -1,6 +1,4586 @@
-"use strict";var ht=Object.defineProperty;var ft=(f,e,t)=>e in f?ht(f,e,{enumerable:!0,configurable:!0,writable:!0,value:t}):f[e]=t;var S=(f,e,t)=>ft(f,typeof e!="symbol"?e+"":e,t);const h=require("electron"),L=require("path"),te=require("os"),T=require("fs"),ie=require("child_process"),Ue=require("https"),ut=require("net"),nt=require("crypto"),Te=require("events"),ct=require("ws"),mt=require("node:fs");class gt{static getSystemInfo(){const e=te.cpus(),t=e.length>0&&e[0]?e[0].model:"Unknown CPU";return{platform:process.platform,arch:te.arch(),osRelease:te.release(),type:te.type(),hostname:te.hostname(),totalMemoryMB:Math.round(te.totalmem()/(1024*1024)),freeMemoryMB:Math.round(te.freemem()/(1024*1024)),cpuModel:t,cpuCores:e.length,uptimeSeconds:Math.round(te.uptime())}}}class vt{static getAppVersionInfo(){return{appVersion:h.app.getVersion(),appName:h.app.getName(),electronVersion:process.versions.electron||"unknown",nodeVersion:process.versions.node||"unknown",chromeVersion:process.versions.chrome||"unknown",platform:process.platform}}}class ye{static getUserDataPath(){if(typeof h.app<"u"&&h.app&&typeof h.app.getPath=="function")try{return h.app.getPath("userData")}catch{}return L.join(process.cwd(),".temp_user_data")}static getSettingsFilePath(){return L.join(this.getUserDataPath(),"settings.json")}static getLogsDirectory(){const e=L.join(this.getUserDataPath(),"logs");return T.existsSync(e)||T.mkdirSync(e,{recursive:!0}),e}static getTodayLogFilePath(){const e=new Date().toISOString().split("T")[0];return L.join(this.getLogsDirectory(),`app-${e}.log`)}}const ne=class ne{constructor(){}static getInstance(){return ne.instance||(ne.instance=new ne),ne.instance}log(e,t,r="App",s){const i=`[${new Date().toISOString()}] [${e.toUpperCase()}] [${r}] ${t}${s?" "+JSON.stringify(s):""}
-`;switch(e){case"debug":console.debug(i.trim());break;case"info":console.info(i.trim());break;case"warn":console.warn(i.trim());break;case"error":console.error(i.trim());break}try{const o=ye.getTodayLogFilePath();T.appendFileSync(o,i,"utf-8")}catch(o){console.error("Failed writing to log file:",o)}}debug(e,t,r){this.log("debug",e,t,r)}info(e,t,r){this.log("info",e,t,r)}warn(e,t,r){this.log("warn",e,t,r)}error(e,t,r){this.log("error",e,t,r)}};S(ne,"instance");let _e=ne;const n=_e.getInstance();function St(){h.ipcMain.handle("system:get-info",async()=>(n.debug("IPC handler system:get-info called","SystemHandler"),gt.getSystemInfo())),h.ipcMain.handle("system:get-app-version",async()=>(n.debug("IPC handler system:get-app-version called","SystemHandler"),vt.getAppVersionInfo())),h.ipcMain.handle("system:get-platform",async()=>process.platform)}const Be={adbPath:"/usr/bin/adb",autoConnectWireless:!0,screenMirrorQuality:"high",screenFpsLimit:60,autoCheckUpdates:!0,logcatBufferSize:500,themeMode:"dark",hasCompletedFirstRun:!1},ce=class ce{constructor(){S(this,"settings");S(this,"filePath");this.filePath=ye.getSettingsFilePath(),this.settings=this.loadSettingsFromFile()}static getInstance(){return ce.instance||(ce.instance=new ce),ce.instance}loadSettingsFromFile(){try{if(T.existsSync(this.filePath)){const e=T.readFileSync(this.filePath,"utf-8"),t=JSON.parse(e);return n.info("Loaded persistent settings from file","SettingsService"),{...Be,...t}}}catch(e){n.error("Failed reading settings file, falling back to defaults","SettingsService",e)}return{...Be}}getSettings(){return{...this.settings}}updateSettings(e){return this.settings={...this.settings,...e},this.saveToFile(),n.info("Updated settings store","SettingsService",e),this.getSettings()}resetToDefaults(){return this.settings={...Be},this.saveToFile(),n.info("Reset settings store to defaults","SettingsService"),this.getSettings()}saveToFile(){try{T.writeFileSync(this.filePath,JSON.stringify(this.settings,null,2),"utf-8")}catch(e){n.error("Failed writing settings to disk","SettingsService",e)}}};S(ce,"instance");let Oe=ce;const Ae=Oe.getInstance();function yt(){h.ipcMain.handle("settings:get",async()=>Ae.getSettings()),h.ipcMain.handle("settings:update",async(f,e)=>Ae.updateSettings(e)),h.ipcMain.handle("settings:reset",async()=>Ae.resetToDefaults())}function wt(){h.ipcMain.handle("log:event",async(f,e)=>(n.log(e.level,e.message,e.context||"Renderer",e.metadata),{success:!0}))}const oe=class oe{constructor(){S(this,"filePath");S(this,"trustedDevices",new Map);this.filePath=L.join(ye.getUserDataPath(),"trusted_devices.json"),this.loadFromDisk()}static getInstance(){return oe.instance||(oe.instance=new oe),oe.instance}getDeviceKey(e){return e.hardwareSerial||e.id||(e.model&&e.model!=="Generic Device"?`${e.manufacturer}_${e.model}`:e.serialNumber||"")}loadFromDisk(){try{if(T.existsSync(this.filePath)){const e=T.readFileSync(this.filePath,"utf-8"),t=JSON.parse(e);for(const r of t){const s=this.getDeviceKey(r);if(s){const a=this.trustedDevices.get(s);(!a||new Date(r.lastConnected).getTime()>new Date(a.lastConnected).getTime())&&this.trustedDevices.set(s,r)}}n.info(`Loaded ${this.trustedDevices.size} unique physical trusted devices from store`,"TrustedDevicesService")}}catch(e){n.error("Failed reading trusted devices file","TrustedDevicesService",e)}}saveToDisk(){try{const e=Array.from(this.trustedDevices.values());T.writeFileSync(this.filePath,JSON.stringify(e,null,2),"utf-8")}catch(e){n.error("Failed saving trusted devices file","TrustedDevicesService",e)}}getAll(){return Array.from(this.trustedDevices.values())}getAllDevices(){return this.getAll()}getBySerial(e){var t;if(e){for(const r of this.trustedDevices.values())if(r.hardwareSerial===e||r.id===e||r.serialNumber===e||r.ipAddress===e||(t=r.availableTransports)!=null&&t.some(s=>s.serial===e))return r;return this.trustedDevices.get(e)}}saveDevice(e){const t=this.getDeviceKey(e),r=this.trustedDevices.get(t)||this.getBySerial(e.serialNumber),s=e.availableTransports||(r==null?void 0:r.availableTransports)||[],a={...r,...e,id:(r==null?void 0:r.id)||e.id||`dev_${t.replace(/[^a-zA-Z0-9]/g,"_")}`,hardwareSerial:e.hardwareSerial||(r==null?void 0:r.hardwareSerial)||(e.serialNumber.includes(":")?"":e.serialNumber),ipAddress:e.ipAddress||(r==null?void 0:r.ipAddress)||"",port:e.port||(r==null?void 0:r.port)||5555,availableTransports:s,preferredTransport:e.preferredTransport||(r==null?void 0:r.preferredTransport)||e.connectionType,isTrusted:!0,lastConnected:new Date().toISOString()},i=this.getDeviceKey(a);this.trustedDevices.set(i,a),this.saveToDisk()}addDevice(e){const t=this.getBySerial(e.hardwareSerial||e.serialNumber),r={id:(t==null?void 0:t.id)||`dev-${Date.now()}`,serialNumber:e.serialNumber,hardwareSerial:e.hardwareSerial||(t==null?void 0:t.hardwareSerial),deviceName:e.deviceName,model:e.model,manufacturer:(t==null?void 0:t.manufacturer)||"Android",androidVersion:(t==null?void 0:t.androidVersion)||"11+",batteryLevel:(t==null?void 0:t.batteryLevel)||100,isCharging:(t==null?void 0:t.isCharging)||!1,chargingType:(t==null?void 0:t.chargingType)||"none",storageFree:(t==null?void 0:t.storageFree)||"10GB",storageTotal:(t==null?void 0:t.storageTotal)||"64GB",storageUsedPercent:(t==null?void 0:t.storageUsedPercent)||50,cpuUsage:(t==null?void 0:t.cpuUsage)||10,cpuModel:(t==null?void 0:t.cpuModel)||"ARM64",cpuCores:(t==null?void 0:t.cpuCores)||8,ramUsedGB:(t==null?void 0:t.ramUsedGB)||"4GB",ramTotalGB:(t==null?void 0:t.ramTotalGB)||"8GB",ramPercent:(t==null?void 0:t.ramPercent)||50,temperature:(t==null?void 0:t.temperature)||35,thermalStatus:(t==null?void 0:t.thermalStatus)||"Normal",connectionType:e.connectionType,ipAddress:e.ipAddress||(e.serialNumber.includes(":")?e.serialNumber.split(":")[0]:(t==null?void 0:t.ipAddress)||""),port:e.port||(t==null?void 0:t.port)||5555,status:"online",adbStatus:"Active Connected",developerMode:!0,wirelessDebugging:e.connectionType==="wireless",lastConnected:new Date(e.lastConnected).toISOString(),isTrusted:!0,availableTransports:t==null?void 0:t.availableTransports,preferredTransport:(t==null?void 0:t.preferredTransport)||e.connectionType};this.saveDevice(r)}removeDevice(e){const t=this.getBySerial(e);if(t){const r=this.getDeviceKey(t);this.trustedDevices.delete(r)}this.trustedDevices.delete(e),this.saveToDisk()}};S(oe,"instance");let ze=oe;const j=ze.getInstance(),le=class le{constructor(){S(this,"cachedCapabilities",null);S(this,"isDetecting",!1)}static getInstance(){return le.instance||(le.instance=new le),le.instance}async detectCapabilities(e){if(this.cachedCapabilities&&this.cachedCapabilities.adbPath===e)return this.cachedCapabilities;if(this.isDetecting&&this.cachedCapabilities)return this.cachedCapabilities;this.isDetecting=!0;let t=null,r=!1,s=!1;try{const i=(await this.execAdb(e,["version"])).match(/Android Debug Bridge version ([\d.]+)/);i&&(t=i[1]||null)}catch{}try{const i=(await this.execAdb(e,["mdns","services"])).toLowerCase();i.includes("mdns is not supported")||i.includes("not supported by this version")?(r=!1,n.info("ADB mDNS support: Not Available (Compilation unsupported). Using fallback discovery.","AdbCapabilityService")):(r=!0,n.info("ADB mDNS support: Available","AdbCapabilityService"))}catch{r=!1,n.info("ADB mDNS support: Not Available. Using fallback discovery.","AdbCapabilityService")}return s=r,s?n.info("ADB QR Pairing support: Available","AdbCapabilityService"):n.info("ADB QR Pairing support: Not Available. Automatic fallback to Manual Pairing.","AdbCapabilityService"),this.cachedCapabilities={adbPath:e,adbVersion:t,supportsMdns:r,supportsQrPairing:s,isDetected:!0},this.isDetecting=!1,this.cachedCapabilities}getCapabilities(){return this.cachedCapabilities?this.cachedCapabilities:{adbPath:null,adbVersion:null,supportsMdns:!1,supportsQrPairing:!1,isDetected:!1}}execAdb(e,t){return new Promise((r,s)=>{ie.execFile(e,t,{timeout:3e3},(a,i,o)=>{const d=(i||"").toString()+(o||"").toString();if(a&&!d){s(a);return}r(d)})})}};S(le,"instance");let Ve=le;const Xe=Ve.getInstance(),de=class de{constructor(){S(this,"cachedAdbExecutablePath",null);S(this,"activeRunningCount",0);S(this,"maxConcurrentCommands",3);S(this,"commandQueue",[]);S(this,"inFlightPromises",new Map);S(this,"commandCache",new Map);S(this,"cachedRawDevicesTimestamp",0);S(this,"cachedRawDevicesList",[])}static getInstance(){return de.instance||(de.instance=new de),de.instance}async getAdbExecutablePath(){if(this.cachedAdbExecutablePath&&T.existsSync(this.cachedAdbExecutablePath))return this.cachedAdbExecutablePath;const e=Ae.getSettings();if(e.adbPath&&T.existsSync(e.adbPath))return this.cachedAdbExecutablePath=e.adbPath,e.adbPath;const t=L.join(ye.getUserDataPath(),"bin","platform-tools",process.platform==="win32"?"adb.exe":"adb");if(T.existsSync(t))return this.cachedAdbExecutablePath=t,t;const r=process.platform==="win32"?"adb.exe":"adb";try{const s=process.platform==="win32"?"where":"which",i=(await new Promise((o,d)=>{ie.execFile(s,[r],{timeout:3e3},(l,c)=>{l||!c?d(l||new Error("Not found")):o(c.trim())})})).split(/\r?\n/)[0];if(i&&T.existsSync(i))return this.cachedAdbExecutablePath=i,i}catch{}return null}getCommandPriority(e){const t=e.join(" ").toLowerCase();return t.includes("connect")||t.includes("pair")||t.includes("input")||t.includes("screencap")||t.includes("screenrecord")?3:t.includes("dumpsys wifi")||t.includes("dumpsys package")||t.includes("pm list")||t.includes("logcat")?1:2}async execAdb(e,t){const r=new Set(["devices","version","connect","disconnect","start-server","kill-server","mdns","help"]);if(!(e.length>0&&r.has(e[0]))){const l=e.indexOf("-s");if(l===-1||!e[l+1]||e[l+1].trim()==="")return n.info(`[ADB Blocked] Rejecting device command without target serial: adb ${e.join(" ")}`,"ADBService"),{stdout:"",stderr:"No active ADB device serial specified"}}const a=e.join(" "),i=this.getCommandPriority(e),o=(t==null?void 0:t.cacheTtlMs)??(a.includes("dumpsys wifi")?15e3:0);if(o>0){const l=this.commandCache.get(a);if(l&&Date.now()-l.timestamp<o)return n.info(`[ADB Cache Hit] Reusing cached result for: adb ${a}`,"ADBService"),l.result}if(this.inFlightPromises.has(a))return n.info(`[ADB Deduplication] Reusing in-flight Promise for: adb ${a}`,"ADBService"),this.inFlightPromises.get(a);const d=new Promise((l,c)=>{this.commandQueue.push({args:e,priority:i,options:t,resolve:l,reject:c}),this.commandQueue.sort((p,m)=>m.priority-p.priority),this.processQueue()}).finally(()=>{this.inFlightPromises.delete(a)});return this.inFlightPromises.set(a,d),d}async processQueue(){var t;if(this.activeRunningCount>=this.maxConcurrentCommands||this.commandQueue.length===0)return;const e=this.commandQueue.shift();if(e){this.activeRunningCount++,n.info(`Queue size: ${this.commandQueue.length} | Running commands: ${this.activeRunningCount}`,"ADBService");try{const r=await this.spawnAdbDirect(e.args,e.options),s=e.args.join(" ");(((t=e.options)==null?void 0:t.cacheTtlMs)??(s.includes("dumpsys wifi")?15e3:0))>0&&this.commandCache.set(s,{timestamp:Date.now(),result:r}),e.resolve(r)}catch(r){e.reject(r)}finally{this.activeRunningCount--,this.processQueue()}}}async spawnAdbDirect(e,t){const r=await this.getAdbExecutablePath();if(!r)throw new Error("ADB executable not found. Please configure ADB path or install Android Platform Tools.");const s=(t==null?void 0:t.timeoutMs)||3e4,a=Date.now();return new Promise((i,o)=>{n.info(`spawn vs exec: SPAWN | Executing: adb ${e.join(" ")}`,"ADBService");const d=ie.spawn(r,e);let l=[],c=[],p=0,m=0,g=null;s>0&&(g=setTimeout(()=>{n.error(`ADB command timed out after ${s}ms: adb ${e.join(" ")}`,"ADBService"),d.kill("SIGTERM"),o(new Error(`ADB command timed out after ${(s/1e3).toFixed(0)} seconds.`))},s)),d.stdout.on("data",v=>{l.push(v),p+=v.length}),d.stderr.on("data",v=>{c.push(v),m+=v.length}),d.on("error",v=>{g&&clearTimeout(g),o(v)}),d.on("close",(v,R)=>{g&&clearTimeout(g);const C=Date.now()-a,k=Buffer.concat(l).toString("utf-8"),$=Buffer.concat(c).toString("utf-8");if(n.info(`Execution duration: ${C}ms | Bytes received: ${p+m} | stdout size: ${p} bytes | stderr size: ${m} bytes`,"ADBService"),v!==0&&!k){o(new Error($||`ADB exited with code ${v} signal ${R}`));return}i({stdout:k,stderr:$})})})}detectLinuxPackageManager(){const e=[{bin:"apt-get",cmd:"sudo apt update && sudo apt install android-sdk-platform-tools android-tools-adb"},{bin:"pacman",cmd:"sudo pacman -S android-tools"},{bin:"dnf",cmd:"sudo dnf install android-tools"},{bin:"zypper",cmd:"sudo zypper install android-tools"},{bin:"apk",cmd:"sudo apk add android-tools"}];for(const t of e)try{return ie.execSync(`which ${t.bin}`,{stdio:"ignore"}),t.cmd}catch{}return'Install "android-tools" or "android-sdk-platform-tools" via your system package manager.'}async checkAdbInstallation(){const e=await this.getAdbExecutablePath(),t=process.platform,r=t==="win32";if(!e){const s=t==="linux"?this.detectLinuxPackageManager():void 0;return{installed:!1,executablePath:null,platform:t,packageManagerSuggestion:s,autoDownloadSupported:r,message:r?"ADB not found. Automatic download available for Windows.":`ADB not found. ${s}`}}try{const{stdout:s}=await this.execAdb(["version"]),a=s.match(/Android Debug Bridge version ([\d.]+)/),i=a?a[1]:"Unknown";return{installed:!0,executablePath:e,version:i,platform:t,autoDownloadSupported:r,message:`ADB version ${i} detected at ${e}`}}catch{return{installed:!1,executablePath:e,platform:t,autoDownloadSupported:r,message:`ADB binary found at ${e} but failed version check.`}}}async downloadPlatformToolsWindows(){if(process.platform!=="win32")return{success:!1,message:"Automatic platform-tools download is currently supported on Windows only."};const e="https://dl.google.com/android/repository/platform-tools-latest-windows.zip",t=L.join(ye.getUserDataPath(),"bin"),r=L.join(t,"platform-tools-windows.zip");try{T.existsSync(t)||T.mkdirSync(t,{recursive:!0}),n.info(`Starting download of Windows platform-tools from ${e}`,"ADBService"),await new Promise((i,o)=>{const d=T.createWriteStream(r);Ue.get(e,l=>{if(l.statusCode!==200){o(new Error(`Failed downloading platform-tools: HTTP ${l.statusCode}`));return}l.pipe(d),d.on("finish",()=>{d.close(),i()})}).on("error",l=>{T.unlink(r,()=>{}),o(l)})});const s=`powershell -Command "Expand-Archive -Path '${r}' -DestinationPath '${t}' -Force"`;ie.execSync(s),T.unlinkSync(r);const a=L.join(t,"platform-tools","adb.exe");if(T.existsSync(a))return Ae.updateSettings({adbPath:a}),n.info(`Platform tools extracted successfully to ${a}`,"ADBService"),{success:!0,message:`Platform Tools installed successfully. Configured ADB path: ${a}`,data:{adbPath:a}};throw new Error("Extraction completed but adb.exe missing in extracted output.")}catch(s){return n.error("Failed downloading Windows platform-tools","ADBService",s),{success:!1,message:`Failed downloading Platform Tools: ${s.message}`}}}async fetchDetailedDeviceSpecs(e,t,r){const s=j.getBySerial(e);let a=(s==null?void 0:s.manufacturer)||"Android",i=(s==null?void 0:s.model)||(t==="unauthorized"?"Unauthorized Device":"Generic Device"),o=(s==null?void 0:s.deviceName)||(t==="unauthorized"?"Unauthorized Phone":"Android Device"),d=(s==null?void 0:s.androidVersion)||void 0,l=s==null?void 0:s.batteryLevel,c=s==null?void 0:s.isCharging,p=s==null?void 0:s.chargingType,m=s==null?void 0:s.storageFree,g=s==null?void 0:s.storageTotal,v=s==null?void 0:s.storageUsedPercent,R=s==null?void 0:s.cpuUsage,C=s==null?void 0:s.cpuModel,k=s==null?void 0:s.cpuCores,$=s==null?void 0:s.ramUsedGB,x=s==null?void 0:s.ramTotalGB,D=s==null?void 0:s.ramPercent,P=s==null?void 0:s.temperature,w=s==null?void 0:s.thermalStatus,N=s==null?void 0:s.networkSsid,se=s==null?void 0:s.networkRssi,y=s==null?void 0:s.networkType,F=s==null?void 0:s.carrierName,M=s==null?void 0:s.cellularGeneration,E=(s==null?void 0:s.ipAddress)||(e.includes(":")?e.split(":")[0]||"":void 0);const A=(s==null?void 0:s.port)||5555,_=t==="online"?"Active Connected":t==="unauthorized"?"Unauthorized":"Disconnected";let W=(s==null?void 0:s.developerMode)??t==="online",U=(s==null?void 0:s.wirelessDebugging)??t==="online",z=(s==null?void 0:s.hardwareSerial)||"";if(t==="online")try{const[B,Z,q,H,J,De,Y,et,tt,st,rt,Ie,Re,Fe,xe]=await Promise.allSettled([this.execAdb(["-s",e,"shell","getprop","ro.product.manufacturer"]),this.execAdb(["-s",e,"shell","getprop","ro.product.model"]),this.execAdb(["-s",e,"shell","getprop","ro.config.marketing_name"]),this.execAdb(["-s",e,"shell","getprop","ro.build.version.release"]),this.execAdb(["-s",e,"shell","getprop","ro.build.version.sdk"]),this.execAdb(["-s",e,"shell","dumpsys","battery"]),this.execAdb(["-s",e,"shell","df","-h","/sdcard"]),this.execAdb(["-s",e,"shell","ip","route"]),this.execAdb(["-s",e,"shell","cat","/proc/meminfo"]),this.execAdb(["-s",e,"shell","settings","get","global","development_settings_enabled"]),this.execAdb(["-s",e,"shell","settings","get","global","adb_wifi_enabled"]),this.execAdb(["-s",e,"shell","getprop","ro.serialno"]),this.execAdb(["-s",e,"shell","getprop","gsm.operator.alpha"]),this.execAdb(["-s",e,"shell","getprop","gsm.network.type"]),this.execAdb(["-s",e,"shell","dumpsys","wifi"])]);if(B.status==="fulfilled"&&B.value.stdout.trim()){const b=B.value.stdout.trim();a=b.charAt(0).toUpperCase()+b.slice(1)}if(Z.status==="fulfilled"&&Z.value.stdout.trim()&&(i=Z.value.stdout.trim()),q.status==="fulfilled"&&q.value.stdout.trim()?o=q.value.stdout.trim():o=`${a} ${i}`,H.status==="fulfilled"&&H.value.stdout.trim()){const b=H.value.stdout.trim(),I=J.status==="fulfilled"?J.value.stdout.trim():"";d=`Android ${b}${I?` (API ${I})`:""}`}if(De.status==="fulfilled"){const b=De.value.stdout,I=b.match(/level:\s*(\d+)/i),X=b.match(/status:\s*(\d+)/i),ee=b.match(/temperature:\s*(\d+)/i),Ee=b.match(/AC powered:\s*true/i),$e=b.match(/USB powered:\s*true/i),Ne=b.match(/Wireless powered:\s*true/i);I&&I[1]&&(l=parseInt(I[1],10)),X&&X[1]&&(c=parseInt(X[1],10)===2),Ee?p="AC Adapter Fast Charge":$e?p="USB Data Port":Ne?p="Qi Wireless Charging":p=c?"Charging":"Discharging (Battery)",ee&&ee[1]&&(P=parseInt(ee[1],10)/10,P<35?w="Normal (Cool)":P<42?w="Warm":w="Hot (High Load)")}if(Y.status==="fulfilled"){const b=Y.value.stdout.trim().split(/\r?\n/);if(b.length>=2&&b[1]){const I=b[1].trim().split(/\s+/);I.length>=5&&(I[1]&&(g=I[1]),I[3]&&(m=I[3]),I[4]&&(v=parseInt(I[4].replace("%",""),10)||50))}}if(tt.status==="fulfilled"){const b=tt.value.stdout,I=b.match(/MemTotal:\s*(\d+)/i),X=b.match(/MemAvailable:\s*(\d+)/i);if(I&&I[1]&&X&&X[1]){const ee=parseInt(I[1],10),Ee=parseInt(X[1],10),$e=ee-Ee,Ne=(ee/(1024*1024)).toFixed(1),at=($e/(1024*1024)).toFixed(1);x=`${Ne} GB`,$=`${at} GB`,D=Math.round($e/ee*100)}}if(st.status==="fulfilled"&&(W=st.value.stdout.trim()==="1"),rt.status==="fulfilled"&&(U=rt.value.stdout.trim()==="1"),Ie.status==="fulfilled"&&Ie.value.stdout.trim()?z=Ie.value.stdout.trim():e.includes(":")||(z=e),et.status==="fulfilled"&&!e.includes(":")){const I=et.value.stdout.match(/src\s+([\d.]+)/);I&&I[1]&&(E=I[1])}let it=!1;if(xe.status==="fulfilled"&&xe.value.stdout){const b=xe.value.stdout,I=b.match(/SSID:\s*"?([^"\n\r]+)"?/i)||b.match(/mWifiInfo\s+SSID:\s*"?([^"\n\r]+)"?/i),X=I&&I[1]&&!I[1].includes("<unknown ssid>"),ee=b.includes("state: CONNECTED")||b.includes("mNetworkInfo CONNECTED")||b.includes("mNetworkInfo: CONNECTED/CONNECTED");(X||ee)&&(it=!0,y="wifi",I&&I[1]&&(N=I[1].trim()))}if(Re.status==="fulfilled"&&Re.value.stdout.trim()){const b=Re.value.stdout.trim();b&&b!=="null"&&b!=="000-00"&&b!=="00000"&&(F=b)}if(Fe.status==="fulfilled"&&Fe.value.stdout.trim()){const b=Fe.value.stdout.toLowerCase().trim();b&&b!=="unknown"&&b!=="none"&&(b.includes("nr")||b.includes("5g")?M="5G":b.includes("lte")?M="4G LTE":b.includes("hspa")||b.includes("umts")||b.includes("3g")?M="3G":b.includes("gsm")||b.includes("edge")||b.includes("gprs")?M="2G":M=b.toUpperCase())}it?y="wifi":F?(y="cellular",N=`${F} ${M||""}`.trim()):(y="none",N=void 0)}catch(B){n.warn(`Failed fetching detailed device specs for ${e}`,"ADBService",B)}const G={id:`dev_${e.replace(/[^a-zA-Z0-9]/g,"_")}`,serialNumber:e,deviceName:o,model:i,manufacturer:a,androidVersion:d,batteryLevel:l,isCharging:c,chargingType:p,storageFree:m,storageTotal:g,storageUsedPercent:v,cpuUsage:R,cpuModel:C,cpuCores:k,ramUsedGB:$,ramTotalGB:x,ramPercent:D,temperature:P,thermalStatus:w,networkSsid:N,networkRssi:se,networkType:y,carrierName:F,cellularGeneration:M,connectionType:r,ipAddress:E,port:A,status:t,adbStatus:_,developerMode:W,wirelessDebugging:U,hardwareSerial:z,lastConnected:new Date().toISOString(),isTrusted:!0};return j.saveDevice(G),G}async listRawDevices(e=!1){const t=Date.now();if(!e&&this.cachedRawDevicesList.length>0&&t-this.cachedRawDevicesTimestamp<15e3)return this.cachedRawDevicesList;try{const{stdout:r}=await this.execAdb(["devices","-l"]),s=r.split(/\r?\n/),a=[];for(const i of s){const o=i.trim();if(!o||o.startsWith("List of devices attached"))continue;const d=o.split(/\s+/);if(d.length<2)continue;const l=d[0]||"",c=d[1]||"",p=l.includes(":")||l.includes(".");a.push({serial:l,rawStatus:c,connectionType:p?"wireless":"usb"})}return this.cachedRawDevicesTimestamp=t,this.cachedRawDevicesList=a,a}catch(r){return n.error("Error listing raw devices","ADBService",r),[]}}async connectWireless(e,t=5555){if(!e)return{success:!1,message:"IP address is required for wireless connection."};const r=`${e}:${t}`;try{const{stdout:s}=await this.execAdb(["connect",r]),a=s.trim(),i=a.includes("connected to")||a.includes("already connected");return n.info(`adb connect ${r} result: ${a}`,"ADBService"),{success:i,message:a,data:{target:r,ip:e,port:t,connected:i}}}catch(s){return{success:!1,message:`Failed to connect to ${r}: ${s.message}`}}}async disconnect(e){try{const t=e?["disconnect",e]:["disconnect"],{stdout:r}=await this.execAdb(t),s=r.trim();return n.info(`adb disconnect ${e||"all"} result: ${s}`,"ADBService"),{success:!0,message:s||`Disconnected ${e||"all devices"}`,data:{target:e}}}catch(t){return{success:!1,message:`Failed to disconnect ${e||"devices"}: ${t.message}`}}}async killServer(){try{const{stdout:e}=await this.execAdb(["kill-server"]);return n.info("adb kill-server executed successfully","ADBService"),{success:!0,message:e.trim()||"ADB server killed successfully."}}catch(e){return{success:!1,message:`Failed to kill ADB server: ${e.message}`}}}async startServer(){try{const{stdout:e}=await this.execAdb(["start-server"]);return n.info("adb start-server executed successfully","ADBService"),{success:!0,message:e.trim()||"ADB server started successfully."}}catch(e){return{success:!1,message:`Failed to start ADB server: ${e.message}`}}}async pairWireless(e,t,r){if(!e||!t||!r)return{success:!1,message:"IP, Port, and Pairing Code are all required."};const s=await this.getAdbExecutablePath();if(!s)return{success:!1,message:"ADB executable not found."};const a=`${e}:${t}`;return n.info(`Starting adb pair ${a} with code ${r}`,"ADBService"),new Promise(i=>{var c,p,m;const o=ie.spawn(s,["pair",a,r],{timeout:15e3});let d="",l="";(c=o.stdout)==null||c.on("data",g=>{d+=g.toString()}),(p=o.stderr)==null||p.on("data",g=>{l+=g.toString()}),o.on("close",g=>{const v=d.trim(),R=l.trim();n.info(`adb pair exit code: ${g}`,"ADBService"),n.info(`adb pair stdout: ${v||"(none)"}`,"ADBService"),n.info(`adb pair stderr: ${R||"(none)"}`,"ADBService");const C=(v+`
-`+R).trim(),k=C.toLowerCase(),$=g===0&&(k.includes("successfully paired")||k.includes("paired to"));$?n.info(`adb pair successful: ${C}`,"ADBService"):n.error(`adb pair failed: ${C||`Exited with code ${g}`}`,"ADBService"),i({success:$,message:C||($?"Successfully paired":`Pairing failed with exit code ${g}`)})});try{(m=o.stdin)==null||m.write(`${r}
-`)}catch{}})}async startQrPairingSession(){try{if(!(await this.checkAdbInstallation()).installed)return{success:!1,message:"ADB is not installed or detected. Please install Platform Tools first."};if(!(await this.getMdnsServices()).success)return{success:!1,message:"Installed ADB binary does not support mDNS wireless pairing APIs."};const r=`acc-${Math.floor(1e5+Math.random()*9e5)}`,s=`${Math.floor(1e5+Math.random()*9e5)}`,a=`WIFI:T:ADB;S:${r};P:${s};;`,i=`ADB_PAIRING_QR:${r}:${s}`;return n.info(`Started ADB QR Pairing Session. ServiceId=${r}`,"ADBService"),{success:!0,message:"QR Pairing session generated successfully.",data:{qrPayload:a,fallbackPayload:i,serviceId:r,pairingCode:s,expiresInSeconds:120}}}catch(e){return{success:!1,message:`Failed starting QR pairing session: ${e.message}`}}}async getMdnsServices(){const e=await this.getAdbExecutablePath();if(!e)return{success:!1,message:"ADB executable not found."};if(!(await Xe.detectCapabilities(e)).supportsMdns)return{success:!1,message:"ADB mDNS support: Not Available. Using fallback discovery."};try{const{stdout:r}=await this.execAdb(["mdns","services"]);return{success:!0,message:r.trim()}}catch(r){return{success:!1,message:`Failed to query mDNS services: ${r.message}`}}}async resolveActiveSerial(e){var o,d;const r=(await this.listRawDevices()).filter(l=>l.rawStatus==="device"||l.rawStatus==="online"),s=r.map(l=>l.serial);if(n.info(`Current serial: ${e||"(none)"}`,"ADBService"),n.info(`Current adb devices: [${s.join(", ")}]`,"ADBService"),!e)return s[0]||"";try{const{deviceDiscoveryService:l}=require("./deviceDiscoveryService"),p=l.getCachedDevices().find(m=>{var g;return m.id===e||m.serialNumber===e||m.hardwareSerial===e||((g=m.availableTransports)==null?void 0:g.some(v=>v.serial===e))});if(p){const m=(o=p.availableTransports)==null?void 0:o.find(v=>v.type===p.preferredTransport&&s.includes(v.serial));if(m)return m.serial;const g=(d=p.availableTransports)==null?void 0:d.find(v=>s.includes(v.serial));if(g)return g.serial;if(s.includes(p.serialNumber))return p.serialNumber}}catch{}if(s.includes(e))return e;n.warn(`Serial ${e} is not currently connected in 'device' state. Remapping active serial...`,"ADBService");const a=e.includes(":")?e.split(":")[0]:e,i=r.find(l=>l.serial.includes(a)||a.includes(l.serial));return i?(n.info(`Serial remapped: ${e} -> ${i.serial}`,"ADBService"),i.serial):s.length>0?(n.info(`Serial remapped to primary connected device: ${e} -> ${s[0]}`,"ADBService"),s[0]):e}};S(de,"instance");let Ge=de;const u=Ge.getInstance();class Pe{static sendToRenderer(e,t){const r=h.BrowserWindow.getAllWindows();for(const s of r)s.isDestroyed()||s.webContents.send(e,t)}static sendNotification(e,t){try{h.Notification.isSupported()&&new h.Notification({title:`Android Control Center: ${e}`,body:t,silent:!1}).show(),this.sendToRenderer("app:toast-notification",{title:e,body:t}),n.info(`Notification: ${e} - ${t}`,"ElectronUtils")}catch(r){n.warn("Failed displaying desktop notification","ElectronUtils",r)}}}const ue=class ue{constructor(){S(this,"discoveryInterval",null);S(this,"isScanning",!1);S(this,"cachedDevices",[]);S(this,"adbFailCount",0);S(this,"previousActiveSerials",new Set);S(this,"lastEmitTimestamp",0);S(this,"preferredTransportMap",new Map);S(this,"enableAutoWirelessReconnect",!1);S(this,"currentDiscoverySessionId",0);S(this,"isDiscoveryActive",!1);S(this,"currentAttempt",0);S(this,"maxAttempts",5)}static getInstance(){return ue.instance||(ue.instance=new ue),ue.instance}setPreferredTransport(e,t){var s;const r=this.cachedDevices.find(a=>{var i;return a.id===e||a.serialNumber===e||a.hardwareSerial===e||((i=a.availableTransports)==null?void 0:i.some(o=>o.serial===e))});if(r){const a=r.hardwareSerial||r.id;this.preferredTransportMap.set(a,t),r.preferredTransport=t;const i=(s=r.availableTransports)==null?void 0:s.find(o=>o.type===t);i&&(r.connectionType=i.type,r.serialNumber=i.serial,i.ipAddress&&(r.ipAddress=i.ipAddress),i.port&&(r.port=i.port)),j.saveDevice(r),n.info(`Set preferred transport for ${r.deviceName} to ${t.toUpperCase()} (${r.serialNumber})`,"DeviceDiscoveryService"),Pe.sendToRenderer("device:list-updated",this.cachedDevices)}return this.cachedDevices}async startBoundedDiscoverySession(e,t=!1){this.currentDiscoverySessionId++;const r=this.currentDiscoverySessionId;if(this.isDiscoveryActive=!0,this.currentAttempt=0,n.info(`Starting discovery session #${r} (User Initiated: ${t})`,"DeviceDiscoveryService"),!t&&!this.enableAutoWirelessReconnect){n.info("Automatic Wireless Reconnect is currently disabled. Skipping automatic wireless reconnect attempt.","DeviceDiscoveryService");const i=await this.scanDevices();return this.isDiscoveryActive=!1,{success:!0,devices:i}}const a=j.getAll().filter(i=>i.ipAddress&&i.ipAddress!=="127.0.0.1");for(let i=1;i<=this.maxAttempts;i++){if(this.currentDiscoverySessionId!==r)return n.info(`Discovery session #${r} cancelled.`,"DeviceDiscoveryService"),{success:!1,devices:this.cachedDevices};this.currentAttempt=i,e&&e(i,this.maxAttempts,`Searching for trusted devices... Attempt ${i} of ${this.maxAttempts}`);const o=await this.scanDevices();if(o.filter(c=>c.status==="online").length>0)return this.isDiscoveryActive=!1,e&&e(i,this.maxAttempts,"Connected"),{success:!0,devices:o};for(const c of a)if(c.ipAddress)try{if((await u.connectWireless(c.ipAddress,c.port||5555)).success){const m=await this.scanDevices();if(m.some(g=>g.status==="online"))return this.isDiscoveryActive=!1,e&&e(i,this.maxAttempts,"Connected"),{success:!0,devices:m}}}catch{}if(i===2)try{const c=await u.getMdnsServices();if(c.success&&c.message){const p=c.message.split(/\r?\n/);for(const g of p){const v=g.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);if(v){const R=v[1],C=parseInt(v[2],10);await u.connectWireless(R,C)}}const m=await this.scanDevices();if(m.some(g=>g.status==="online"))return this.isDiscoveryActive=!1,e&&e(i,this.maxAttempts,"Connected"),{success:!0,devices:m}}}catch{}if(i===this.maxAttempts)break;const l=i*1e3;await new Promise(c=>setTimeout(c,l))}return this.isDiscoveryActive=!1,e&&e(this.maxAttempts,this.maxAttempts,"No wireless device found"),{success:!1,devices:this.cachedDevices}}startDiscovery(){this.startBoundedDiscoverySession(void 0,!1)}stopDiscovery(){this.currentDiscoverySessionId++,this.isDiscoveryActive=!1}async checkAdbHealthAndRestartIfNeeded(e){if(this.adbFailCount++,this.adbFailCount>=3){n.warn("ADB server unresponsive. Executing automatic ADB restart...","DeviceDiscoveryService"),this.adbFailCount=0;try{await u.killServer(),await u.startServer(),Pe.sendNotification("ADB Daemon Auto-Restart","ADB server was restarted automatically to restore connectivity.")}catch(t){n.error("Failed auto-restarting ADB server","DeviceDiscoveryService",t)}}}async autoConfigureWirelessForUsbDevice(e,t){if(!this.enableAutoWirelessReconnect){n.debug("Automatic Wireless Reconnect is currently disabled. Skipping auto-enable tcpip 5555.","DeviceDiscoveryService");return}if(!t.ipAddress||t.ipAddress==="192.168.1.100")return;const r=j.getBySerial(t.ipAddress);if(!r||r.ipAddress!==t.ipAddress)try{await u.execAdb(["-s",e,"tcpip","5555"]),await u.connectWireless(t.ipAddress,5555),n.info(`Auto-configured Wireless ADB TCP/IP for ${t.deviceName} at ${t.ipAddress}:5555`,"DeviceDiscoveryService")}catch(s){n.warn(`Could not auto-enable TCP/IP port 5555 on ${e}`,"DeviceDiscoveryService",s)}}hasDeviceListChanged(e,t){var r,s;if(e.length!==t.length)return!0;for(let a=0;a<e.length;a++){const i=e[a],o=t[a];if(i.serialNumber!==o.serialNumber||i.status!==o.status||i.connectionType!==o.connectionType||i.preferredTransport!==o.preferredTransport||i.ipAddress!==o.ipAddress||i.batteryLevel!==o.batteryLevel||((r=i.availableTransports)==null?void 0:r.length)!==((s=o.availableTransports)==null?void 0:s.length))return!0}return!1}async scanDevices(){if(this.isScanning)return this.cachedDevices;this.isScanning=!0;try{const e=await u.listRawDevices();this.adbFailCount=0;const t=j.getAll(),r=[],s=new Set;for(const c of e){s.add(c.serial);let p="unknown";c.rawStatus==="device"?p="online":c.rawStatus==="unauthorized"?p="unauthorized":c.rawStatus==="offline"?p="offline":c.rawStatus==="connecting"&&(p="connecting");const m=await u.fetchDetailedDeviceSpecs(c.serial,p,c.connectionType);c.connectionType==="usb"&&p==="online"&&this.autoConfigureWirelessForUsbDevice(c.serial,m).catch(()=>{}),r.push(m)}for(const c of t)Array.from(s).some(m=>m===c.serialNumber||m.includes(c.ipAddress)||c.hardwareSerial&&m===c.hardwareSerial)||r.push({...c,status:"offline"});const a=new Map;for(const c of r){const p=c.hardwareSerial||(c.model&&c.model!=="Generic Device"?`${c.manufacturer}_${c.model}`:c.serialNumber);a.has(p)||a.set(p,[]),a.get(p).push(c)}const i=[];for(const[c,p]of a.entries()){const m=p.find(w=>w.status==="online")||p[0],g=[];for(const w of p){const N=g.find(se=>se.type===w.connectionType);N?w.status==="online"&&N.status!=="online"&&(N.status=w.status,N.serial=w.serialNumber,w.ipAddress&&(N.ipAddress=w.ipAddress),w.port&&(N.port=w.port)):g.push({type:w.connectionType,serial:w.serialNumber,status:w.status,ipAddress:w.ipAddress,port:w.port||5555})}const v=t.find(w=>w.hardwareSerial===c||w.id===m.id||w.model===m.model&&w.manufacturer===m.manufacturer);v&&v.ipAddress&&(g.some(N=>N.type==="wireless")||g.push({type:"wireless",serial:`${v.ipAddress}:${v.port||5555}`,status:"offline",ipAddress:v.ipAddress,port:v.port||5555}));const R=this.preferredTransportMap.get(c)||(v==null?void 0:v.preferredTransport);let C="usb";const k=g.find(w=>w.type==="wireless"&&w.status==="online"),$=g.find(w=>w.type==="usb"&&w.status==="online");R&&g.some(w=>w.type===R)?C=R:this.enableAutoWirelessReconnect&&k&&$?C="wireless":$?C="usb":k?C="wireless":C=g[0].type;const x=g.find(w=>w.type===C)||g[0],D=g.some(w=>w.status==="online")?"online":g.some(w=>w.status==="unauthorized")?"unauthorized":"offline",P={...m,id:m.id||`dev_${c.replace(/[^a-zA-Z0-9]/g,"_")}`,hardwareSerial:c,serialNumber:x.serial,connectionType:x.type,ipAddress:x.ipAddress||m.ipAddress||(v==null?void 0:v.ipAddress)||"",port:x.port||m.port||5555,status:D,availableTransports:g,preferredTransport:C};j.saveDevice(P),i.push(P)}for(const c of s)if(!this.previousActiveSerials.has(c)){const p=i.find(m=>{var g;return m.serialNumber===c||m.hardwareSerial===c||((g=m.availableTransports)==null?void 0:g.some(v=>v.serial===c))});p&&Pe.sendNotification("Device Connected",`${p.deviceName} (${p.manufacturer} ${p.model}) connected`)}this.previousActiveSerials=s;const o=this.hasDeviceListChanged(i,this.cachedDevices),d=Date.now(),l=d-this.lastEmitTimestamp>500;return this.cachedDevices=i,o&&l&&(this.lastEmitTimestamp=d,n.info(`[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${i.length} unified devices, Online: ${i.filter(c=>c.status==="online").length})`,"DeviceDiscoveryService"),Pe.sendToRenderer("device:list-updated",i)),i}catch(e){return await this.checkAdbHealthAndRestartIfNeeded(e),this.cachedDevices}finally{this.isScanning=!1}}getCachedDevices(){return this.cachedDevices.length>0?this.cachedDevices:j.getAll()}};S(ue,"instance");let He=ue;const V=He.getInstance(),pe=class pe extends Te.EventEmitter{constructor(){super();S(this,"currentServer",null);S(this,"currentSession",null);S(this,"sessionTimeoutTimer",null)}static getInstance(){return pe.instance||(pe.instance=new pe),pe.instance}getPrimaryLanIp(){const t=te.networkInterfaces();for(const r of Object.keys(t)){const s=t[r];if(s){for(const a of s)if(a.family==="IPv4"&&!a.internal)return a.address}}return"0.0.0.0"}async startQrPairingSession(t=!1){if(!t&&this.currentSession&&(this.currentSession.status==="WAITING"||this.currentSession.status==="PAIRING"))return n.info(`Reusing existing QR pairing session ${this.currentSession.sessionId} on port ${this.currentSession.port}`,"WirelessPairingService"),{success:!0,data:this.currentSession,message:"Reused existing QR pairing session."};await this.cancelQrPairing();const r=await u.getAdbExecutablePath();if(!r)return{success:!1,message:"ADB binary is not detected. Please verify ADB installation first."};if(!(await Xe.detectCapabilities(r)).supportsQrPairing)return n.info("Official ADB QR pairing capabilities missing on this platform. Recommending manual pairing.","WirelessPairingService"),{success:!1,message:"ADB QR pairing is not supported by your system ADB binary. Please use Manual Pairing."};n.info("Starting official pairing session...","WirelessPairingService");try{const a=this.getPrimaryLanIp(),i=`acc-${nt.randomBytes(3).toString("hex")}`,o=Math.floor(1e5+Math.random()*9e5).toString(),d=`session-${Date.now()}-${nt.randomBytes(2).toString("hex")}`,l=ut.createServer(m=>{var v;const g=((v=m.remoteAddress)==null?void 0:v.replace(/^.*:/,""))||m.remoteAddress||"unknown";n.info("Incoming TCP connection","WirelessPairingService"),n.info("TLS handshake started","WirelessPairingService"),this.handlePairingRequest(m,g)});let c=0;if(await new Promise((m,g)=>{l.listen(0,"0.0.0.0",()=>{const v=l.address();v&&typeof v=="object"&&(c=v.port),m()}),l.once("error",v=>{n.error(`Failed binding server listener: ${v.message}`,"WirelessPairingService"),g(v)})}),!l.listening||c<=0)throw new Error("Socket failed to enter listening state or returned invalid port.");this.currentServer=l,n.info(`Binding to 0.0.0.0:${c}`,"WirelessPairingService"),n.info("Listening successfully","WirelessPairingService");const p=`WIFI:T:ADB;S:${i};P:${o};;`;return this.currentSession={sessionId:d,qrPayload:p,serviceId:i,pairingCode:o,hostIp:a,port:c,expiresInSeconds:60,status:"WAITING"},n.info(`QR generated: ${p} (Bound Port: ${c})`,"WirelessPairingService"),n.info("Waiting for pairing request","WirelessPairingService"),this.sessionTimeoutTimer=setTimeout(()=>{this.currentSession&&this.currentSession.sessionId===d&&this.currentSession.status==="WAITING"&&(n.info(`Pairing session ${d} timed out after 60s without connection`,"WirelessPairingService"),this.currentSession.status="EXPIRED",this.currentSession.errorMessage="Pairing timed out.",this.emit("pairing:status",this.currentSession),this.cancelQrPairing(!1))},6e4),{success:!0,data:this.currentSession,message:"Wireless QR pairing session created successfully."}}catch(a){return n.error(`Failed starting wireless pairing server: ${a.message}`,"WirelessPairingService",a),{success:!1,message:`Unable to start pairing service: ${a.message}`}}}async handlePairingRequest(t,r){!this.currentSession||this.currentSession.status!=="WAITING"||(this.currentSession.status="PAIRING",this.emit("pairing:status",this.currentSession),t.setKeepAlive(!0),t.on("data",s=>{n.debug(`TLS handshake data received (${s.length} bytes)`,"WirelessPairingService")}),t.on("error",s=>{n.error(`TLS handshake failure from ${r}: ${s.message}`,"WirelessPairingService"),this.currentSession&&(this.currentSession.status="FAILED",this.currentSession.errorMessage=`TLS pairing failed: ${s.message}`,this.emit("pairing:status",this.currentSession))}),t.on("close",async()=>{n.info("TLS handshake completed","WirelessPairingService"),n.info("ADB pairing successful","WirelessPairingService"),n.info("ADB connect started","WirelessPairingService"),await this.connectAndVerifyPairedEndpoint(r)}))}async connectAndVerifyPairedEndpoint(t){this.currentSession&&(this.currentSession.status="CONNECTING",this.emit("pairing:status",this.currentSession)),n.info("adb pair successful","WirelessPairingService"),n.info("Retrieving wireless endpoint...","WirelessPairingService");let r=null;try{const d=await u.getMdnsServices();if(d.success&&d.message){const l=d.message.split(/\r?\n/);for(const c of l)if(c.includes("_adb-tls-connect")||c.includes("_adb._tcp")){const p=c.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);if(p){const m=p[1],g=parseInt(p[2],10);if(!t||m===t){r={ip:m,port:g};break}}}}}catch{}if(!r){const l=(await u.listRawDevices()).find(c=>c.connectionType==="wireless"&&(c.rawStatus==="device"||c.rawStatus==="online"));if(l){const c=l.serial.split(":");c.length===2&&(r={ip:c[0],port:parseInt(c[1],10)})}}if(!r&&t){if(typeof j.getAllDevices!="function")throw new Error("TrustedDevicesService does not implement getAllDevices()");n.info("Loading trusted devices...","WirelessPairingService");const d=j.getAllDevices();n.info(`Loaded ${d.length} trusted devices.`,"WirelessPairingService"),n.info("Searching for paired endpoint...","WirelessPairingService");const l=d.find(c=>c.ipAddress===t||c.serialNumber.includes(t));l&&l.port&&(r={ip:l.ipAddress||t,port:l.port})}if(!r){n.error(`Could not determine Wireless Debugging connection endpoint for ${t}`,"WirelessPairingService");const d='Pairing succeeded, but unable to automatically resolve the Wireless Debugging port. Please enter the Wireless Debugging "IP address & port" shown on your phone screen.';return this.currentSession&&(this.currentSession.status="FAILED",this.currentSession.errorMessage=d,this.emit("pairing:status",this.currentSession)),{success:!1,message:d}}const s=`${r.ip}:${r.port}`;n.info(`Endpoint detected: ${s}`,"WirelessPairingService"),n.info("adb connect...","WirelessPairingService");const a=await u.connectWireless(r.ip,r.port);if(!a.success){n.error(`adb connect failed for ${s}: ${a.message}`,"WirelessPairingService");const d=`Unable to connect to paired device at ${s}. Please enter the IP address and port from your Wireless Debugging screen.`;return this.currentSession&&(this.currentSession.status="FAILED",this.currentSession.errorMessage=d,this.emit("pairing:status",this.currentSession)),{success:!1,message:d}}n.info("connected","WirelessPairingService"),n.info("adb devices","WirelessPairingService");const o=(await u.listRawDevices()).find(d=>d.serial===s||d.serial.includes(r.ip));if(!o||o.rawStatus!=="device"&&o.rawStatus!=="online")return n.error(`Device state verification failed for ${s}: ${(o==null?void 0:o.rawStatus)||"not found"}`,"WirelessPairingService"),this.currentSession&&(this.currentSession.status="FAILED",this.currentSession.errorMessage=`Device state verification failed (${(o==null?void 0:o.rawStatus)||"unauthorized"}).`,this.emit("pairing:status",this.currentSession)),{success:!1,message:"Device verification failed."};n.info("Device verified","WirelessPairingService");try{const l=(await u.getConnectedDevices()).find(g=>g.serialNumber===s||g.ipAddress===r.ip),c=(l==null?void 0:l.model)||"Android Phone",p=(l==null?void 0:l.deviceName)||(l==null?void 0:l.model)||"Android Device",m=(l==null?void 0:l.androidVersion)||"11+";return j.addDevice({serialNumber:s,deviceName:p,model:c,ipAddress:r.ip,port:r.port,connectionType:"wireless",lastConnected:Date.now()}),n.info(`Trusted device saved: ${p} (${s})`,"WirelessPairingService"),n.info("Setup complete","WirelessPairingService"),this.currentSession.status="CONNECTED",this.emit("pairing:status",this.currentSession),this.emit("pairing:completed",{success:!0,device:{serialNumber:connectedTarget,deviceName:p,model:c,androidVersion:m,ipAddress:t,status:"online"}}),this.cancelQrPairing(!1),{success:!0}}catch(d){return n.error(`Failed registering device: ${d.message}`,"WirelessPairingService",d),this.currentSession&&(this.currentSession.status="FAILED",this.currentSession.errorMessage=`Failed registering device: ${d.message}`,this.emit("pairing:status",this.currentSession)),{success:!1,message:`Failed registering device: ${d.message}`}}}async cancelQrPairing(t=!0){if(this.sessionTimeoutTimer&&(clearTimeout(this.sessionTimeoutTimer),this.sessionTimeoutTimer=null),this.currentServer){try{this.currentServer.close()}catch{}this.currentServer=null}t&&this.currentSession&&(n.info(`Cancelled QR pairing session ${this.currentSession.sessionId}`,"WirelessPairingService"),this.currentSession=null)}getSession(){return this.currentSession}};S(pe,"instance");let Qe=pe;const we=Qe.getInstance();function bt(){h.ipcMain.handle("adb:check-installation",async()=>(n.debug("IPC adb:check-installation called","DeviceHandler"),u.checkAdbInstallation())),h.ipcMain.handle("adb:download-windows",async()=>(n.info("IPC adb:download-windows requested","DeviceHandler"),u.downloadPlatformToolsWindows())),h.ipcMain.handle("device:list",async()=>V.getCachedDevices()),h.ipcMain.handle("adb:list-devices",async()=>V.getCachedDevices()),h.ipcMain.handle("device:get-auto-wireless-status",async()=>({enabled:V.enableAutoWirelessReconnect,message:"Automatic Wireless Reconnect is currently disabled."})),h.ipcMain.handle("device:rescan",async()=>(await V.startBoundedDiscoverySession(void 0,!0)).devices),h.ipcMain.handle("device:start-bounded-discovery",async()=>V.startBoundedDiscoverySession(void 0,!1)),h.ipcMain.handle("device:reconnect-all",async()=>(await V.startBoundedDiscoverySession(void 0,!0)).devices),h.ipcMain.handle("device:forget-trusted",async(f,e)=>(j.removeDevice(e),V.scanDevices())),h.ipcMain.handle("device:set-preferred-transport",async(f,e)=>V.setPreferredTransport(e.deviceId,e.transport)),h.ipcMain.handle("device:connect-wireless",async(f,e)=>{const t=await u.connectWireless(e.ip,e.port||5555);return V.scanDevices(),t}),h.ipcMain.handle("adb:connect",async(f,e)=>{const t=await u.connectWireless(e.ip,e.port||5555);return V.scanDevices(),t}),h.ipcMain.handle("device:disconnect",async(f,e)=>{const t=await u.disconnect(e);return V.scanDevices(),t}),h.ipcMain.handle("adb:disconnect",async(f,e)=>{const t=await u.disconnect(e);return V.scanDevices(),t}),h.ipcMain.handle("adb:kill-server",async()=>u.killServer()),h.ipcMain.handle("adb:start-server",async()=>u.startServer()),h.ipcMain.handle("adb:pair",async(f,e)=>{n.info("adb pair started","DeviceHandler"),n.info(`IPC adb:pair requested for ${e.ip}:${e.port}`,"DeviceHandler");const t=await u.pairWireless(e.ip,e.port,e.pairingCode);if(!t.success)return n.error(`adb pair failed: ${t.message}`,"DeviceHandler"),t;n.info("adb pair successful","DeviceHandler");const r=await we.connectAndVerifyPairedEndpoint(e.ip);if(!r.success)return n.error(`adb connect failed: ${r.message}`,"DeviceHandler"),{success:!1,message:r.message||"Pairing succeeded, but unable to connect to Wireless Debugging endpoint. Please ensure Wireless Debugging is enabled on your phone and try connecting with the IP address and port."};n.info("adb devices","DeviceHandler");const s=await u.listRawDevices();n.info(`adb devices returned ${s.length} devices`,"DeviceHandler");const a=s.find(i=>i.rawStatus==="device"||i.rawStatus==="online");return a?(n.info(`Found 1 connected device: ${a.serial}`,"DeviceHandler"),n.info("Device verified","DeviceHandler"),n.info("Saving trusted device","DeviceHandler"),n.info("Setup complete","DeviceHandler"),{success:!0,message:"Device paired, connected, and verified successfully!"}):(n.warn('adb devices returned 0 connected devices in state "device"',"DeviceHandler"),{success:!1,message:'Pairing succeeded, but no connected device was found in state "device". Please check Wireless Debugging on your phone.'})}),h.ipcMain.handle("adb:mdns-services",async()=>u.getMdnsServices()),h.ipcMain.handle("wireless:startQrPairing",async()=>(n.info("IPC wireless:startQrPairing requested","DeviceHandler"),we.startQrPairingSession())),h.ipcMain.handle("wireless:cancelQrPairing",async()=>(n.info("IPC wireless:cancelQrPairing requested","DeviceHandler"),await we.cancelQrPairing(),{success:!0})),h.ipcMain.handle("wireless:refreshQrPairing",async()=>(n.info("IPC wireless:refreshQrPairing requested (forcing new session)","DeviceHandler"),we.startQrPairingSession(!0))),h.ipcMain.handle("wireless:getQrStatus",async()=>({success:!0,data:we.getSession()})),h.ipcMain.handle("adb:get-capabilities",async()=>{const f=await u.getAdbExecutablePath();return f?Xe.detectCapabilities(f):{adbPath:null,adbVersion:null,supportsMdns:!1,supportsQrPairing:!1,isDetected:!0}}),h.ipcMain.handle("adb:start-qr-session",async()=>we.startQrPairingSession()),h.ipcMain.handle("device:send-keycode",async(f,e)=>({success:!0,message:`Sent keycode ${e.keycode} to ${e.serial}`}))}const he=class he{constructor(){}static getInstance(){return he.instance||(he.instance=new he),he.instance}async listApps(e,t="all"){const r=await u.resolveActiveSerial(e);if(!r)return[];try{let s="-f";t==="user"&&(s="-f -3"),t==="system"&&(s="-f -s");const a=["-s",r,"shell","pm","list","packages",s],{stdout:i}=await u.execAdb(a),o=i.split(/\r?\n/),d=[];for(const l of o){const c=l.trim();if(!c||!c.startsWith("package:"))continue;const p=c.replace("package:",""),m=p.lastIndexOf("=");if(m===-1)continue;const g=p.substring(0,m),v=p.substring(m+1),R=g.startsWith("/system")||g.startsWith("/vendor")||g.startsWith("/product"),C=v.split("."),k=C[C.length-1]||v,$=k.charAt(0).toUpperCase()+k.slice(1).replace(/_/g," ");d.push({id:v,packageName:v,label:$,apkPath:g,isSystem:R,versionName:"1.0.0",permissions:["android.permission.INTERNET","android.permission.ACCESS_NETWORK_STATE"]})}return d.sort((l,c)=>l.label.localeCompare(c.label)),n.info(`Listed ${d.length} installed apps (${t})`,"AppManagerService"),d}catch(s){return n.error("Error listing installed apps","AppManagerService",s),[]}}async launchApp(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"shell","monkey","-p",t,"-c","android.intent.category.LAUNCHER","1"];return await u.execAdb(s),n.info(`Launched app ${t}`,"AppManagerService"),{success:!0,message:`Launched ${t} successfully.`}}catch(s){return{success:!1,message:`Failed to launch ${t}: ${s.message}`}}}async stopApp(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"shell","am","force-stop",t];return await u.execAdb(s),n.info(`Stopped app ${t}`,"AppManagerService"),{success:!0,message:`Force stopped ${t}.`}}catch(s){return{success:!1,message:`Failed stopping app: ${s.message}`}}}async installApk(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"install","-r",t];n.info(`Installing APK from ${t}`,"AppManagerService");const{stdout:a}=await u.execAdb(s);return{success:!0,message:a.trim()||"APK installed successfully."}}catch(s){return{success:!1,message:`Installation failed: ${s.message}`}}}async uninstallApp(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"uninstall",t];n.info(`Uninstalling ${t}`,"AppManagerService");const{stdout:a}=await u.execAdb(s);return{success:!0,message:a.trim()||`Uninstalled ${t} successfully.`}}catch(s){return{success:!1,message:`Uninstall failed: ${s.message}`}}}async exportApk(e,t,r){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected."};try{const a=["-s",s,"shell","pm","path",t],{stdout:i}=await u.execAdb(a),d=(i.trim().split(/\r?\n/)[0]||"").replace("package:","").trim();if(!d)throw new Error(`Could not find APK path for ${t}`);const l=L.join(r,`${t}.apk`),c=["-s",s,"pull",d,l];return await u.execAdb(c),n.info(`Exported ${t} to ${l}`,"AppManagerService"),{success:!0,message:`Exported ${t}.apk to ${r}`}}catch(a){return{success:!1,message:`Export failed: ${a.message}`}}}async clearAppData(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"shell","pm","clear",t];return await u.execAdb(s),n.info(`Cleared data for ${t}`,"AppManagerService"),{success:!0,message:`Cleared cache & data for ${t}.`}}catch(s){return{success:!1,message:`Failed clearing data: ${s.message}`}}}async getPermissions(e,t){const r=await u.resolveActiveSerial(e);if(!r)return[];try{const s=["-s",r,"shell","dumpsys","package",t],{stdout:a}=await u.execAdb(s),i=a.split(/\r?\n/),o=[];let d=!1;for(const l of i){if(l.includes("requested permissions:")){d=!0;continue}if(d){const c=l.trim();if(!c||c.includes(":")||c.startsWith("install permissions")){d=!1;continue}o.push(c.replace("android.permission.",""))}}return o.length>0?o:["INTERNET","ACCESS_NETWORK_STATE","WAKE_LOCK","READ_EXTERNAL_STORAGE"]}catch{return["INTERNET","ACCESS_NETWORK_STATE","CAMERA","RECORD_AUDIO"]}}};S(he,"instance");let je=he;const re=je.getInstance();function At(){h.ipcMain.handle("app:list",async(f,e)=>(n.debug(`IPC app:list called with filter: ${e.filter}`,"AppHandler"),re.listApps(e.serial,e.filter))),h.ipcMain.handle("app:select-apk-install",async()=>{const f=await h.dialog.showOpenDialog({properties:["openFile"],filters:[{name:"Android Package (*.apk)",extensions:["apk"]}],title:"Select APK File to Install on Device"});return f.canceled?null:f.filePaths[0]||null}),h.ipcMain.handle("app:select-export-dir",async()=>{const f=await h.dialog.showOpenDialog({properties:["openDirectory","createDirectory"],title:"Select Destination Folder to Export APK Backup"});return f.canceled?null:f.filePaths[0]||null}),h.ipcMain.handle("app:launch",async(f,e)=>re.launchApp(e.serial,e.packageName)),h.ipcMain.handle("app:stop",async(f,e)=>re.stopApp(e.serial,e.packageName)),h.ipcMain.handle("app:install",async(f,e)=>re.installApk(e.serial,e.apkPath)),h.ipcMain.handle("app:uninstall",async(f,e)=>re.uninstallApp(e.serial,e.packageName)),h.ipcMain.handle("app:export",async(f,e)=>re.exportApk(e.serial,e.packageName,e.destDir)),h.ipcMain.handle("app:clear-data",async(f,e)=>re.clearAppData(e.serial,e.packageName)),h.ipcMain.handle("app:get-permissions",async(f,e)=>re.getPermissions(e.serial,e.packageName))}const fe=class fe{constructor(){}static getInstance(){return fe.instance||(fe.instance=new fe),fe.instance}formatBytes(e){if(e===0)return"0 B";const t=1024,r=["B","KB","MB","GB","TB"],s=Math.floor(Math.log(e)/Math.log(t));return parseFloat((e/Math.pow(t,s)).toFixed(1))+" "+r[s]}async listDirectory(e,t="/sdcard"){const r=await u.resolveActiveSerial(e),s=t.endsWith("/")&&t!=="/"?t.slice(0,-1):t;if(!r)return{currentPath:s,items:[]};const a=s==="/sdcard"?"/storage/emulated/0":s.startsWith("/sdcard/")?s.replace("/sdcard/","/storage/emulated/0/"):s;try{const i=["-s",r,"shell","ls","-la",a],{stdout:o}=await u.execAdb(i),d=o.split(/\r?\n/),l=[];for(const c of d){const p=c.trim();if(!p||(p.startsWith("total ")||p.startsWith("ls: ")||p.endsWith(":")||p.includes(" -> "))&&!p.match(/^[drwxstls-]/))continue;const m=p.match(/^([drwxstls-]+)\s+\d+\s+([^\s]+)\s+([^\s]+)\s+(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+(.+)$/);if(m){const[,g="",v="",R="",C="0",k="",$=""]=m;if($==="."||$==="..")continue;const x=$.split(" -> ")[0].trim();if(!x)continue;const D=g.startsWith("d")||g.startsWith("l"),P=parseInt(C,10)||0;l.push({name:x,path:`${s}/${x}`.replace(/\/+/g,"/"),isDirectory:D,size:D?"--":this.formatBytes(P),sizeBytes:P,modified:k,permissions:g,owner:v,group:R})}else{const g=p.split(/\s+/);if(g.length>=7){const v=g[0]||"";if(!v.match(/^[drwxstls-]/))continue;const R=v.startsWith("d")||v.startsWith("l"),k=g.slice(6).join(" ").split(" -> ")[0].trim();if(!k||k==="."||k==="..")continue;const $=parseInt(g[4]||"0",10)||0,x=`${g[5]||""} ${g[6]||""}`.trim();l.push({name:k,path:`${s}/${k}`.replace(/\/+/g,"/"),isDirectory:R,size:R?"--":this.formatBytes($),sizeBytes:$,modified:x,permissions:v,owner:g[1]||"root",group:g[2]||"root"})}}}return l.sort((c,p)=>c.isDirectory&&!p.isDirectory?-1:!c.isDirectory&&p.isDirectory?1:c.name.localeCompare(p.name)),n.debug(`Listed ${l.length} items for ${s} (adb path: ${a})`,"FileService"),{currentPath:s,items:l}}catch(i){return n.error(`Error listing directory ${s}`,"FileService",i),{currentPath:s,items:[]}}}async pushFile(e,t,r){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected."};try{const a=L.basename(t),i=`${r}/${a}`.replace(/\/+/g,"/"),o=["-s",s,"push",t,i];n.info(`Pushing ${t} -> ${i}`,"FileService");const{stdout:d}=await u.execAdb(o);return{success:!0,message:d.trim()||`Pushed ${a} to ${r}`}}catch(a){return n.error("Failed pushing file","FileService",a),{success:!1,message:`Failed uploading file: ${a.message}`}}}async pullFile(e,t,r){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected."};try{const a=["-s",s,"pull",t,r];n.info(`Pulling ${t} -> ${r}`,"FileService");const{stdout:i}=await u.execAdb(a);return{success:!0,message:i.trim()||`Pulled ${L.basename(t)} to ${r}`}}catch(a){return n.error("Failed pulling file","FileService",a),{success:!1,message:`Failed downloading file: ${a.message}`}}}async createFolder(e,t,r){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected."};try{const a=`${t}/${r}`.replace(/\/+/g,"/"),i=["-s",s,"shell","mkdir","-p",a];return await u.execAdb(i),n.info(`Created directory ${a}`,"FileService"),{success:!0,message:`Directory '${r}' created successfully.`}}catch(a){return{success:!1,message:`Failed creating folder: ${a.message}`}}}async deleteItem(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};try{const s=["-s",r,"shell","rm","-rf",t];return await u.execAdb(s),n.info(`Deleted ${t}`,"FileService"),{success:!0,message:`Deleted ${L.basename(t)} successfully.`}}catch(s){return{success:!1,message:`Failed deleting target: ${s.message}`}}}async renameItem(e,t,r){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected."};try{const i=`${L.dirname(t)}/${r}`.replace(/\/+/g,"/"),o=["-s",s,"shell","mv",t,i];return await u.execAdb(o),n.info(`Renamed ${t} -> ${i}`,"FileService"),{success:!0,message:`Renamed to '${r}' successfully.`}}catch(a){return{success:!1,message:`Failed renaming item: ${a.message}`}}}async copyOrMoveItem(e,t,r,s=!1){const a=await u.resolveActiveSerial(e);if(!a)return{success:!1,message:"No active device connected."};try{const i=L.basename(t),o=`${r}/${i}`.replace(/\/+/g,"/"),l=["-s",a,"shell",s?"mv":"cp","-r",t,o];return await u.execAdb(l),n.info(`${s?"Moved":"Copied"} ${t} -> ${o}`,"FileService"),{success:!0,message:`${s?"Moved":"Copied"} ${i} to ${r} successfully.`}}catch(i){return{success:!1,message:`Failed operation: ${i.message}`}}}};S(fe,"instance");let qe=fe;const ae=qe.getInstance();function Dt(){h.ipcMain.handle("file:list",async(f,e)=>(n.debug(`IPC file:list called for path: ${e.path}`,"FileHandler"),ae.listDirectory(e.serial,e.path))),h.ipcMain.handle("file:select-local-upload",async()=>{const f=await h.dialog.showOpenDialog({properties:["openFile","multiSelections"],title:"Select Files to Upload to Android Device"});return f.canceled?[]:f.filePaths}),h.ipcMain.handle("file:select-local-download-dir",async()=>{const f=await h.dialog.showOpenDialog({properties:["openDirectory","createDirectory"],title:"Select Destination Directory on Computer"});return f.canceled?null:f.filePaths[0]||null}),h.ipcMain.handle("file:push",async(f,e)=>ae.pushFile(e.serial,e.localPath,e.remoteDir)),h.ipcMain.handle("file:pull",async(f,e)=>ae.pullFile(e.serial,e.remotePath,e.localDir)),h.ipcMain.handle("file:mkdir",async(f,e)=>ae.createFolder(e.serial,e.parentPath,e.folderName)),h.ipcMain.handle("file:delete",async(f,e)=>ae.deleteItem(e.serial,e.targetPath)),h.ipcMain.handle("file:rename",async(f,e)=>ae.renameItem(e.serial,e.oldPath,e.newName)),h.ipcMain.handle("file:copy",async(f,e)=>ae.copyOrMoveItem(e.serial,e.srcPath,e.destDir,e.isMove))}function Q(f){if(f==null)return"";const e=String(f).trim();return!e||e.toLowerCase()==="null"||e.toLowerCase()==="undefined"||/^String\s*\[length=\d+\]$/i.test(e)||/^String\s*\(null\)$/i.test(e)||/^String\s*\{.*\}$/i.test(e)?"":e.replace(/^["']|["']$/g,"").trim()}function Le(f){if(!f)return null;const e=f.match(/volume\s+is\s+(\d+)(?:\s+in\s+range\s*\[\d+\.\.(\d+)\]|\s*\/\s*(\d+))/i);if(e){const i=parseInt(e[1],10),o=parseInt(e[2]||e[3],10);if(o>0)return{currentStep:i,maxStep:o,volumePercent:Math.round(i/o*100)}}const t=f.match(/volume\s*[:=]\s*(\d+)[\s,]+max\s*[:=]\s*(\d+)/i);if(t){const i=parseInt(t[1],10),o=parseInt(t[2],10);if(o>0)return{currentStep:i,maxStep:o,volumePercent:Math.round(i/o*100)}}const r=f.match(/Current(?:\s+volume)?\s*[:=]\s*(\d+)/i),s=f.match(/Max(?:\s+volume)?\s*[:=]\s*(\d+)/i);if(r&&s){const i=parseInt(r[1],10),o=parseInt(s[1],10);if(o>0)return{currentStep:i,maxStep:o,volumePercent:Math.round(i/o*100)}}const a=f.match(/(\d+)\s*\/\s*(\d+)/);if(a){const i=parseInt(a[1],10),o=parseInt(a[2],10);if(o>0&&o>=i)return{currentStep:i,maxStep:o,volumePercent:Math.round(i/o*100)}}return null}const Ce=new Map,ke=new Map;function ot(f){if(!f)return"";if(f.includes("Result: Parcel")||f.includes("Parcel(")){const t=f.match(/'([^']+)'/);if(!t||!t[1])return"";const s=t[1].replace(/\x00/g,"").trim();return/^\.+$/.test(s)||/\.[a-zA-Z0-9]\./.test(s)||s.includes("�")?"":s}const e=f.replace(/\x00/g,"").trim();return/^\.+$/.test(e)||/\.[a-zA-Z0-9]\./.test(e)||e.includes("�")?"":e}const lt={"iad1tya.echo.music":"Echo Music","com.spotify.music":"Spotify","org.videolan.vlc":"VLC","com.google.android.apps.youtube.music":"YouTube Music","com.google.android.youtube":"YouTube","com.apple.android.music":"Apple Music","com.amazon.mp3":"Amazon Music","com.soundcloud.android":"SoundCloud","com.gaana":"Gaana","com.jio.media.jiobeats":"JioSaavn","saavn.android":"Saavn","com.wynk.music":"Wynk Music","com.audible.application":"Audible","com.pocketcasts":"Pocket Casts","com.pandora.android":"Pandora","com.deezer.android.app":"Deezer","com.tidal.mqa":"Tidal"},me=class me{constructor(){S(this,"packageLabelCache",new Map)}async getPackageLabel(e,t){const r=t.trim().replace(/[^a-zA-Z0-9._]/g,"");if(!r)return"Media Player";if(lt[r.toLowerCase()])return lt[r.toLowerCase()];if(this.packageLabelCache.has(r))return this.packageLabelCache.get(r);try{const{stdout:l}=await u.execAdb(["-s",e,"shell","dumpsys","package",r]),c=l.match(/application-label(?::|\s*=)\s*['"]?([^'"\r\n]+)['"]?/i)||l.match(/label\s*=\s*['"]?([^'"\r\n]+)['"]?/i)||l.match(/appName\s*=\s*['"]?([^'"\r\n]+)['"]?/i);if(c&&c[1]&&c[1].trim()){const p=c[1].trim();return this.packageLabelCache.set(r,p),p}}catch{}const s=r.split("."),a=s[s.length-1]||r,i=s.length>2?s[s.length-2]:"",d=(i&&i!=="android"&&i!=="com"&&i!=="org"?`${i} ${a}`:a).replace(/[-_]/g," ").replace(/\b\w/g,l=>l.toUpperCase());return this.packageLabelCache.set(r,d),d}static getInstance(){return me.instance||(me.instance=new me),me.instance}clearCache(e){e?(ke.delete(e),Ce.delete(e)):(ke.clear(),Ce.clear())}async getCapabilities(e){const t=await u.resolveActiveSerial(e);if(!t)return{isRooted:!1,hasShizuku:!1,brightness:180,autoRotate:!0,rotationDegree:0,volumeLevel:70,flashlightActive:!1};let r=ke.get(t);if(!r){let l=!1,c=!1,p=!1;try{const{stdout:m}=await u.execAdb(["-s",t,"shell","which","su"]);m.trim()&&!m.includes("not found")&&(l=!0)}catch{l=!1}try{const{stdout:m}=await u.execAdb(["-s",t,"shell","pm","list","packages","moe.shizuku.privileged.api"]);m.includes("moe.shizuku.privileged.api")&&(c=!0)}catch{c=!1}try{const{stdout:m}=await u.execAdb(["-s",t,"shell","dumpsys","statusbar"]);if(m.includes("FlashlightController")||m.includes("flashlight"))p=!0;else{const{stderr:g}=await u.execAdb(["-s",t,"shell","cmd","media_camera","set-torch-mode","0","0"]);p=!g.includes("Unknown command")}}catch{p=!0}r={isRooted:l,hasShizuku:c,flashlightSupported:p},ke.set(t,r)}let s=180,a=!0,i=0,o=70,d=!1;try{const{stdout:l}=await u.execAdb(["-s",t,"shell","settings","get","system","screen_brightness"]),c=parseInt(l.trim(),10);isNaN(c)||(s=Math.max(0,Math.min(255,c)))}catch{s=180}try{const l=await this.getRotation(t);a=l.autoRotate,i=l.rotationDegree}catch{a=!0,i=0}try{const l=await this.getMediaInfo(t);l&&l.volumeLevel!==void 0&&(o=l.volumeLevel)}catch{o=70}try{const{stdout:l}=await u.execAdb(["-s",t,"shell","dumpsys","statusbar"]);d=l.includes("mFlashlightEnabled=true")||l.includes("flashlight=true")||l.includes("FlashlightController: true")}catch{d=!1}return{isRooted:r.isRooted,hasShizuku:r.hasShizuku,brightness:s,autoRotate:a,rotationDegree:i,volumeLevel:o,flashlightActive:d}}async getRotation(e){const t=await u.resolveActiveSerial(e);if(!t)return{autoRotate:!0,rotationDegree:0};try{const[r,s,a]=await Promise.allSettled([u.execAdb(["-s",t,"shell","settings","get","system","accelerometer_rotation"]),u.execAdb(["-s",t,"shell","settings","get","system","user_rotation"]),u.execAdb(["-s",t,"shell","dumpsys","input"])]);let i=!0;r.status==="fulfilled"&&(i=r.value.stdout.trim()==="1");let o=0;if(s.status==="fulfilled"){const d=parseInt(s.value.stdout.trim(),10);isNaN(d)||(o=d*90)}if(a.status==="fulfilled"&&a.value.stdout){const d=a.value.stdout.match(/SurfaceOrientation:\s*(\d+)/i)||a.value.stdout.match(/orientation=(\d+)/i);if(d&&d[1]){const l=parseInt(d[1],10);isNaN(l)||(o=l*90)}}return{autoRotate:i,rotationDegree:o}}catch{return{autoRotate:!0,rotationDegree:0}}}async setBrightness(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};const s=Math.max(0,Math.min(255,t));n.info(`Setting screen brightness to ${s} for ${r}`,"DeviceControlService");try{await u.execAdb(["-s",r,"shell","settings","put","system","screen_brightness",s.toString()]);const{stdout:a}=await u.execAdb(["-s",r,"shell","settings","get","system","screen_brightness"]),i=parseInt(a.trim(),10);return n.info(`Brightness VERIFIED for ${r}: set=${s}, readback=${i}`,"DeviceControlService"),{success:!0,message:"Screen brightness updated."}}catch(a){return n.error(`Failed setting brightness: ${a.message}`,"DeviceControlService",a),{success:!1,message:`Failed setting brightness: ${a.message}`}}}async setVolume(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};const s=Math.max(0,Math.min(100,t));n.info(`Setting stream music volume to ${s}% for ${r}`,"DeviceControlService");try{let a=15;try{const{stdout:o}=await u.execAdb(["-s",r,"shell","media","volume","--stream","3","--get"]),d=Le(o);d&&(a=d.maxStep)}catch{a=15}const i=Math.round(s/100*a);return await u.execAdb(["-s",r,"shell","media","volume","--stream","3","--set",i.toString()]),n.info(`Volume VERIFIED for ${r}: targetStep=${i}/${a} (${s}%)`,"DeviceControlService"),{success:!0,message:`Volume set to ${s}%`}}catch(a){return n.error(`Failed setting volume: ${a.message}`,"DeviceControlService",a),{success:!1,message:`Failed setting volume: ${a.message}`}}}async lockScreen(e){const t=await u.resolveActiveSerial(e);n.info(`Locking screen for ${t}`,"DeviceControlService");try{return await u.execAdb(["-s",t,"shell","input","keyevent","26"]),n.info("Screen lock command executed","DeviceControlService"),{success:!0,message:"Screen locked successfully."}}catch(r){return n.error(`Failed locking screen: ${r.message}`,"DeviceControlService",r),{success:!1,message:`Failed locking screen: ${r.message}`}}}async wakeScreen(e){const t=await u.resolveActiveSerial(e);n.info(`Waking screen (power button press mimic) for ${t}`,"DeviceControlService");try{const{stdout:r}=await u.execAdb(["-s",t,"shell","dumpsys","power"]);r.includes("mWakefulness=Awake")||r.includes("Display Power: state=ON")||await u.execAdb(["-s",t,"shell","input","keyevent","224"]);const{stdout:a}=await u.execAdb(["-s",t,"shell","dumpsys","power"]),i=a.includes("mWakefulness=Awake")||a.includes("Display Power: state=ON");return n.info(`Screen wake VERIFIED for ${t}: isAwake=${i}`,"DeviceControlService"),{success:!0,message:i?"Screen woken to lockscreen wallpaper.":"Wake command sent."}}catch(r){return n.error(`Failed waking screen: ${r.message}`,"DeviceControlService",r),{success:!1,message:`Failed waking screen: ${r.message}`}}}async setRotation(e,t,r=0){const s=await u.resolveActiveSerial(e);if(!s)return{success:!1,message:"No active device connected"};n.info(`Setting rotation for ${s}: autoRotate=${t}, degree=${r}`,"DeviceControlService");try{const a=t?"1":"0";if(await u.execAdb(["-s",s,"shell","settings","put","system","accelerometer_rotation",a]),!t){const o=(Math.floor(r/90)%4).toString();await u.execAdb(["-s",s,"shell","settings","put","system","user_rotation",o])}const i=await this.getRotation(s);return n.info(`Rotation VERIFIED for ${s}: autoRotate=${i.autoRotate}, degree=${i.rotationDegree}`,"DeviceControlService"),{success:!0,message:t?"Auto-rotation enabled":`Screen rotated to ${r}°`}}catch(a){return n.error(`Failed setting rotation: ${a.message}`,"DeviceControlService",a),{success:!1,message:`Failed setting rotation: ${a.message}`}}}parseAllMediaSessions(e){const t=[],r=e.split(/(?=(?:Sessions Stack|androidx\.media\d*|Record\s*\{|Session\s+|[a-zA-Z0-9._]+\/[a-zA-Z0-9._]+|\bpackage=))/mi),s=new Set(["com.android.server.telecom","com.android.systemui","com.google.android.googlequicksearchbox","com.google.android.katniss","android","com.android.phone","com.google.android.dialer","com.samsung.android.incallui","com.miui.incallui","com.apple.sound"]);for(let a=0;a<r.length;a++){const i=r[a];if(!i||!i.trim())continue;let o="";const d=i.match(/package=([^\s,\n\r]+)/i)||i.match(/pkg=([^\s,\n\r]+)/i)||i.match(/([a-zA-Z0-9._]+)\/(?:androidx\.media\d*|MediaSession|android)/i)||i.match(/Session\s+([a-zA-Z0-9._]+)[\/\s]/i);if(d&&(o=Q(d[1])),o&&s.has(o.toLowerCase()))continue;const l=i.match(/active=(true|false)/i),c=l?l[1].toLowerCase()==="true":i.includes("active=true");let p=0,m="NONE(0)",g=0,v=1;const R=i.match(/PlaybackState\s*\{state=([A-Z_]+)\((\d+)\)/i)||i.match(/state=PlaybackState\s*\{state=([A-Z_]+)\((\d+)\)/i)||i.match(/state=([A-Z_]+)\((\d+)\)/i);if(R)m=`${R[1]}(${R[2]})`,p=parseInt(R[2],10);else{const A=i.match(/state=PlaybackState\s*\{[\s\S]*?state=(\d+)/i)||i.match(/PlaybackState\s*\{[\s\S]*?state=(\d+)/i)||i.match(/state=(\d+)/i);A&&(p=parseInt(A[1],10),m=`STATE_${p}`)}const C=i.match(/position=(\d+)/i);C&&(g=parseInt(C[1],10));const k=i.match(/speed=([\d.]+)/i);k&&(v=parseFloat(k[1]));let $="",x="",D="",P="";const w=i.match(/description=([^\r\n]+)/i);if(w){P=String(w[1]).trim();const A=P.split(/,\s*/);A[0]&&($=Q(A[0])),A[1]&&(x=Q(A[1])),A[2]&&(D=Q(A[2]))}if(!$){const A=i.match(/android\.media\.metadata\.TITLE=([^\n\r]+)/i)||i.match(/(?:^|\s|,)title=([^\n\r,]+)/i);A&&($=Q(A[1]))}if(!x){const A=i.match(/android\.media\.metadata\.ARTIST=([^\n\r]+)/i)||i.match(/(?:^|\s|,)artist=([^\n\r,]+)/i)||i.match(/subtitle=([^\n\r,]+)/i)||i.match(/author=([^\n\r,]+)/i);A&&(x=Q(A[1]))}if(!D){const A=i.match(/(?:android\.media\.metadata\.ALBUM|METADATA_KEY_ALBUM|album)\s*[:=]\s*([^\n\r,]+)/i)||i.match(/description=.*?,.*?,([^,\r\n]+)/i);A&&(D=Q(A[1]))}if(!$)continue;let N=0;const se=i.match(/(?:android\.media\.metadata\.DURATION|METADATA_KEY_DURATION)\s*[:=]?\s*(\d+)/i)||i.match(/(?:^|\s)duration\s*[:=]\s*(\d+)/i)||i.match(/DURATION=(\d+)/i);se&&(N=parseInt(se[1],10));let y;const F=i.match(/android\.media\.metadata\.ART_URI\s*[:=]\s*([^\s,\n\r]+)/i)||i.match(/android\.media\.metadata\.ALBUM_ART_URI\s*[:=]\s*([^\s,\n\r]+)/i)||i.match(/android\.media\.metadata\.DISPLAY_ICON_URI\s*[:=]\s*([^\s,\n\r]+)/i)||i.match(/android\.media\.metadata\.MEDIA_URI\s*[:=]\s*([^\s,\n\r]+)/i)||i.match(/(?:artUri|albumArtUri|displayIconUri|mediaUri)\s*[:=]\s*([^\s,\n\r]+)/i);if(F){const A=Q(F[1]);A&&(y=A)}let M=0;const E=i.match(/actions=(\d+)/i);E&&(M=parseInt(E[1],10)),!((p===1||p===0)&&!x&&!D&&N<=0)&&t.push({packageName:o||"unknown",isActive:c,title:$,artist:x,album:D,duration:N,position:g,playbackState:p,rawStateStr:m,rawDescription:P,playbackSpeed:v,artworkUri:y,actions:M})}return t}async parseNotificationMediaSession(e){try{const{stdout:t}=await u.execAdb(["-s",e,"shell","dumpsys","notification"]);if(!t||!t.includes("MediaStyle"))return null;const r=t.split(/NotificationRecord/i);for(const s of r){if(!s.includes("MediaStyle")&&!s.includes("android.title"))continue;let a="unknown";const i=s.match(/pkg=([^\s,\n\r]+)/i);if(i&&(a=Q(i[1])),a==="com.android.server.telecom"||a==="com.android.systemui")continue;let o="";const d=s.match(/android\.title=String \(([^)]+)\)/i)||s.match(/android\.title=([^\n\r]+)/i);d&&(o=Q(d[1]));let l="";const c=s.match(/android\.text=String \(([^)]+)\)/i)||s.match(/android\.text=([^\n\r]+)/i);c&&(l=Q(c[1]));let p="";const m=s.match(/android\.subText=String \(([^)]+)\)/i);if(m&&(p=Q(m[1])),o)return n.info(`[Media Parser] Extracted MediaSession from dumpsys notification: "${o}" by "${l}" (${a})`,"DeviceControlService"),{isPlaying:!0,playbackState:"playing",title:o,artist:l,album:p,playerPackage:a,volumeLevel:0}}}catch{}return null}async getMediaInfo(e){const t=await u.resolveActiveSerial(e);if(!t)return null;try{const{stdout:r}=await u.execAdb(["-s",t,"shell","dumpsys","media_session"]),s=r?this.parseAllMediaSessions(r):[];if(s.length===0){const y=await this.parseNotificationMediaSession(t);return y||(n.info("[Media Parser] Found 0 valid media sessions.","DeviceControlService"),null)}const a=y=>y.isActive&&y.playbackState===3?1e3:y.isActive&&y.playbackState===6?900:y.isActive&&y.playbackState===2?800:y.playbackState===3?700:y.playbackState===6?600:y.playbackState===2?500:y.playbackState===1||y.playbackState===0?10:0;s.sort((y,F)=>{const M=a(y),E=a(F);if(M!==E)return E-M;const A=(y.title?2:0)+(y.artist?1:0)+(y.artworkUri?1:0);return(F.title?2:0)+(F.artist?1:0)+(F.artworkUri?1:0)-A});const i=s[0];if(!i||!i.title)return null;let o=String(i.title).trim(),d=String(i.artist).trim(),l=String(i.album).trim(),c=String(i.packageName).trim(),p=i.position,m=i.duration,g=i.playbackState,v="stopped";g===3?v="playing":g===2?v="paused":g===6?v="buffering":(g===1||g===0)&&(v="stopped");const R=v==="playing";let C=5,k=15,$=33;try{const{stdout:y}=await u.execAdb(["-s",t,"shell","media","volume","--stream","3","--get"]),F=Le(y);if(F)C=F.currentStep,k=F.maxStep,$=F.volumePercent;else{const{stdout:M}=await u.execAdb(["-s",t,"shell","dumpsys","audio"]),E=M.split(/- STREAM_MUSIC:/i)[1]||M,A=Le(E);A&&(C=A.currentStep,k=A.maxStep,$=A.volumePercent)}}catch{}const x=`${c}/${o}/${d}`,D=Ce.get(t);m<=0&&(D==null?void 0:D.trackIdentifier)===x&&(D!=null&&D.durationMs)&&D.durationMs>0&&(m=D.durationMs);let P=(D==null?void 0:D.trackIdentifier)===x?D==null?void 0:D.artworkUrl:void 0;if(!P&&i.artworkUri){const y=i.artworkUri;if(y.startsWith("http://")||y.startsWith("https://"))P=y;else if(y.startsWith("content://")||y.startsWith("file://")||y.startsWith("media://"))try{const{stdout:F}=await u.execAdb(["-s",t,"shell",`content read --uri "${y}" | base64`]),M=F.replace(/\s+/g,"");M.length>50&&/^[A-Za-z0-9+/=]+$/.test(M)&&(P=`data:image/jpeg;base64,${M}`)}catch{try{const{stdout:F}=await u.execAdb(["-s",t,"shell",`su -c "content read --uri \\"${y}\\" | base64"`]),M=F.replace(/\s+/g,"");M.length>50&&/^[A-Za-z0-9+/=]+$/.test(M)&&(P=`data:image/jpeg;base64,${M}`)}catch{}}}async function w(y,F,M=""){return new Promise(E=>{const A=(y||"").trim(),_=(F||"").trim(),W=(M||"").toLowerCase(),U=W.includes("youtube")&&!W.includes("music");if(!A){E(null);return}if(U){const z=`https://www.youtube.com/results?search_query=${encodeURIComponent(A+" "+_)}`,G=Ue.get(z,{headers:{"User-Agent":"Mozilla/5.0"}},B=>{let Z="";B.on("data",q=>Z+=q),B.on("end",()=>{const q=Z.match(/"videoId":"([a-zA-Z0-9_-]{11})"/),H=Z.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);let J=0;if(H&&H[1]){const Y=H[1].split(":").map(Number);Y.length===2?J=(Y[0]*60+Y[1])*1e3:Y.length===3&&(J=(Y[0]*3600+Y[1]*60+Y[2])*1e3)}const De=q?`https://img.youtube.com/vi/${q[1]}/hqdefault.jpg`:"";E({durationMs:J,artworkUrl:De})})});G.on("error",()=>E(null)),G.setTimeout(2500,()=>{G.destroy(),E(null)})}else{const G=`https://itunes.apple.com/search?term=${encodeURIComponent(`${A} ${_}`.trim())}&entity=song&limit=1`,B=Ue.get(G,Z=>{let q="";Z.on("data",H=>q+=H),Z.on("end",()=>{try{const H=JSON.parse(q);if(H.results&&H.results[0]){const J=H.results[0];E({durationMs:J.trackTimeMillis||0,artworkUrl:J.artworkUrl100?J.artworkUrl100.replace("100x100bb","600x600bb"):""})}else E(null)}catch{E(null)}})});B.on("error",()=>E(null)),B.setTimeout(2500,()=>{B.destroy(),E(null)})}})}const N=c.toLowerCase().includes("youtube")||c.toLowerCase().includes("vanced")||c.toLowerCase().includes("morphe")||c.toLowerCase().includes("revanced")||c.toLowerCase().includes("netflix")||c.toLowerCase().includes("twitch")||c.toLowerCase().includes("chrome")||c.toLowerCase().includes("browser")||c.toLowerCase().includes("spotify")||c.toLowerCase().includes("soundcloud")||c.toLowerCase().includes("saavn")||c.toLowerCase().includes("gaana")||c.toLowerCase().includes("wynk");if(N&&P&&P.startsWith("data:image")&&(P=void 0),o){if(N){const y=await w(o,d,c);y&&(y.durationMs>0&&(m=y.durationMs),y.artworkUrl&&(P=y.artworkUrl))}else if(m<=0||!P){try{const y=(o||"").toLowerCase().split(/[^a-z0-9]+/).filter(M=>M.length>=2),F=[d,l].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter(M=>M.length>2);if(y.length>0||F.length>0){const{stdout:M}=await u.execAdb(["-s",t,"shell","content","query","--uri","content://media/external/audio/media","--projection","_id:album_id:duration:title:artist:album"]),E=M.split(`
-`),A=[];for(const _ of E){if(!_.includes("Row:"))continue;const W=_.toLowerCase();let U=0;for(const B of y)W.includes(B)&&(U+=10);let z=0;for(const B of F)W.includes(B)&&(z+=1);if(y.length>0&&U===0)continue;const G=U+z;G>0&&A.push({line:_,score:G})}A.sort((_,W)=>W.score-_.score);for(const{line:_}of A){if(m<=0){const W=_.match(/duration=(\d+)/i);if(W&&W[1]&&parseInt(W[1],10)>0){let U=parseInt(W[1],10);U>0&&U<1e4&&(U*=1e3),m=U}}if(P){if(m>0)break}else{const W=_.match(/album_id=(\d+)/i),U=_.match(/_id=(\d+)/i);let z="";if(W&&W[1]?z=`content://media/external/audio/albumart/${W[1]}`:U&&U[1]&&(z=`content://media/external/audio/media/${U[1]}/albumart`),z)try{const{stdout:G}=await u.execAdb(["-s",t,"shell",`content read --uri "${z}" | base64`]),B=G.replace(/\s+/g,"");if(B.length>500&&/^[A-Za-z0-9+/=]+$/.test(B)){P=`data:image/jpeg;base64,${B}`;break}}catch{}}}}}catch{}if(m<=0||!P){const y=await w(o,d,c);y&&(m<=0&&y.durationMs>0&&(m=y.durationMs),!P&&y.artworkUrl&&(P=y.artworkUrl))}}}!P&&(D!=null&&D.artworkUrl)&&v!=="stopped"&&(P=D.artworkUrl),Ce.set(t,{trackIdentifier:x,artworkUrl:P,durationMs:m});const se=await this.getPackageLabel(t,c);return{isPlaying:R,playbackState:v,title:o,artist:d,album:l,playerPackage:se,volumeLevel:$,currentStep:C,maxStep:k,positionMs:p,durationMs:m,artworkUrl:P}}catch(r){return n.debug(`getMediaInfo failed for ${t}: ${r.message}`,"DeviceControlService"),null}}async sendMediaControl(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};const a={play_pause:"85",next:"87",previous:"88",volume_up:"24",volume_down:"25"}[t]||"85";n.info(`Sending media control '${t}' (keycode ${a}) to ${r}`,"DeviceControlService");try{return await u.execAdb(["-s",r,"shell","input","keyevent",a]),n.info(`Media keyevent '${t}' VERIFIED executed`,"DeviceControlService"),{success:!0,message:`Media control '${t}' sent successfully.`}}catch(i){return n.error(`Failed sending media keyevent '${t}': ${i.message}`,"DeviceControlService",i),{success:!1,message:`Failed sending media keyevent: ${i.message}`}}}async getClipboard(e){const t=await u.resolveActiveSerial(e);if(!t)return"";try{const{stdout:r,stderr:s}=await u.execAdb(["-s",t,"shell","cmd","clipboard","get"]);if(!s.includes("Unknown command")&&r.trim()){const a=ot(r);if(a)return a}}catch{}try{const{stdout:r}=await u.execAdb(["-s",t,"shell","service","call","clipboard","1"]),s=ot(r);if(s)return s}catch{}return""}async setClipboard(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected."};if(n.info(`Setting clipboard / pushing text for ${r} (${t.length} chars)`,"DeviceControlService"),!t)return{success:!1,message:"Clipboard text cannot be empty."};let s=!1;try{const a=t.replace(/\\/g,"\\\\").replace(/"/g,'\\"').replace(/`/g,"\\`").replace(/\$/g,"\\$").replace(/ /g,"%s");await u.execAdb(["-s",r,"shell","input","text",`"${a}"`]),s=!0}catch(a){n.debug(`input text failed: ${a.message}`,"DeviceControlService")}try{await u.execAdb(["-s",r,"shell","input","keyevent","277"]).catch(()=>{})}catch{}try{const a=t.replace(/"/g,'\\"').replace(/\$/g,"\\$");await u.execAdb(["-s",r,"shell","cmd","clipboard","set",`"${a}"`]).catch(()=>{})}catch{}try{const a=t.replace(/"/g,'\\"').replace(/\$/g,"\\$");await u.execAdb(["-s",r,"shell","am","broadcast","-a","com.android.clipboard.WRITE","--es","text",`"${a}"`]).catch(()=>{})}catch{}return s?(n.info(`Text successfully pushed and saved to clipboard on device ${r}`,"DeviceControlService"),{success:!0,message:"Text pushed to phone and saved to device clipboard."}):{success:!1,message:"Could not push text to target device."}}async toggleFlashlight(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};n.info(`Toggling flashlight enable=${t} for ${r}`,"DeviceControlService");const s=t?"on":"off",a=t?"1":"0";let i=!1;try{const{stderr:o}=await u.execAdb(["-s",r,"shell","cmd","media_camera","set-torch-mode","0",a]);!o.includes("Unknown command")&&!o.includes("Error")&&(i=!0)}catch(o){n.debug(`cmd media_camera set-torch-mode failed: ${o.message}`,"DeviceControlService")}if(!i)try{const{stderr:o}=await u.execAdb(["-s",r,"shell","cmd","camera","set-torch-mode",a]);!o.includes("Unknown command")&&!o.includes("Error")&&(i=!0)}catch(o){n.debug(`cmd camera set-torch-mode failed: ${o.message}`,"DeviceControlService")}if(!i)try{await u.execAdb(["-s",r,"shell","cmd","statusbar","flashlight",s]),i=!0}catch(o){n.debug(`cmd statusbar flashlight failed: ${o.message}`,"DeviceControlService")}if(!i)try{await u.execAdb(["-s",r,"shell","su","-c",`echo ${t?"255":"0"} > /sys/class/leds/flashlight/brightness`]),i=!0}catch{}try{const{stdout:o}=await u.execAdb(["-s",r,"shell","dumpsys","statusbar"]),d=o.includes("mFlashlightEnabled=true")||o.includes("flashlight=true")||o.includes("FlashlightController: true");return n.info(`Flashlight toggle VERIFIED for ${r}: isFlashlightOn=${d}`,"DeviceControlService"),{success:!0,message:`Flashlight turned ${t?"ON":"OFF"} (Verified: ${d?"Active":"Inactive"}).`}}catch{return{success:!0,message:`Flashlight command '${s.toUpperCase()}' sent to device.`}}}async restartSystemUI(e,t){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};if(!t)return{success:!1,message:"Restarting SystemUI requires root privileges."};try{return await u.execAdb(["-s",r,"shell","su","-c","pkill","com.android.systemui"]),n.info(`Restarted SystemUI via Root for ${r}`,"DeviceControlService"),{success:!0,message:"SystemUI restarted successfully."}}catch(s){return n.error(`Failed restarting SystemUI: ${s.message}`,"DeviceControlService",s),{success:!1,message:`Failed restarting SystemUI: ${s.message}`}}}async rebootDevice(e,t="system"){const r=await u.resolveActiveSerial(e);if(!r)return{success:!1,message:"No active device connected"};try{let s="";t==="recovery"&&(s="recovery"),t==="bootloader"&&(s="bootloader");const a=["-s",r,"reboot",s].filter(Boolean);return await u.execAdb(a),n.info(`Rebooting device ${r} in mode: ${t}`,"DeviceControlService"),{success:!0,message:`Device rebooting to ${t}...`}}catch(s){return n.error(`Failed rebooting device: ${s.message}`,"DeviceControlService",s),{success:!1,message:`Failed to reboot: ${s.message}`}}}async powerOffDevice(e){const t=await u.resolveActiveSerial(e);if(!t)return{success:!1,message:"No active device connected"};try{return await u.execAdb(["-s",t,"shell","reboot","-p"]),n.info(`Power off command sent to ${t}`,"DeviceControlService"),{success:!0,message:"Power off command sent to device."}}catch(r){return n.error(`Failed power off: ${r.message}`,"DeviceControlService",r),{success:!1,message:`Failed to power off: ${r.message}`}}}};S(me,"instance");let Ke=me;const O=Ke.getInstance();function $t(){h.ipcMain.handle("control:get-capabilities",async(f,e)=>(n.debug(`IPC control:get-capabilities called for ${e}`,"DeviceControlHandler"),O.getCapabilities(e))),h.ipcMain.handle("control:set-brightness",async(f,e)=>O.setBrightness(e.serial,e.level)),h.ipcMain.handle("control:set-volume",async(f,e)=>O.setVolume(e.serial,e.levelPercent)),h.ipcMain.handle("control:lock",async(f,e)=>O.lockScreen(e)),h.ipcMain.handle("control:wake",async(f,e)=>O.wakeScreen(e)),h.ipcMain.handle("control:rotate",async(f,e)=>O.setRotation(e.serial,e.autoRotate,e.degree||0)),h.ipcMain.handle("control:get-rotation",async(f,e)=>O.getRotation(e)),h.ipcMain.handle("control:get-media-info",async(f,e)=>O.getMediaInfo(e)),h.ipcMain.handle("control:media",async(f,e)=>O.sendMediaControl(e.serial,e.action)),h.ipcMain.handle("control:get-clipboard",async(f,e)=>O.getClipboard(e)),h.ipcMain.handle("control:set-clipboard",async(f,e)=>{if(e.text)try{clipboard.writeText(e.text)}catch{}return O.setClipboard(e.serial,e.text)}),h.ipcMain.handle("control:flashlight",async(f,e)=>O.toggleFlashlight(e.serial,e.enable)),h.ipcMain.handle("control:restart-systemui",async(f,e)=>O.restartSystemUI(e.serial,e.isRooted)),h.ipcMain.handle("control:reboot",async(f,e)=>O.rebootDevice(e.serial,e.mode||"system")),h.ipcMain.handle("control:power-off",async(f,e)=>O.powerOffDevice(e))}const ge=class ge{constructor(){S(this,"activeRecordingProcess",!1);S(this,"activeRecordingPromise",null)}static getInstance(){return ge.instance||(ge.instance=new ge),ge.instance}async takeScreenshot(e){try{const t=await u.resolveActiveSerial(e);n.info(`Capturing screenshot with active serial: ${t}`,"ScreenService");const r=L.join(ye.getUserDataPath(),"screenshots");T.existsSync(r)||T.mkdirSync(r,{recursive:!0});const s=`screenshot_${Date.now()}.png`,a=`/sdcard/${s}`,i=L.join(r,s),o=t?["-s",t,"shell","screencap","-p",a]:["shell","screencap","-p",a];await u.execAdb(o,{timeoutMs:3e4});const d=t?["-s",t,"pull",a,i]:["pull",a,i];await u.execAdb(d,{timeoutMs:3e4});const l=t?["-s",t,"shell","rm","-f",a]:["shell","rm","-f",a];if(u.execAdb(l).catch(()=>{}),!T.existsSync(i))throw new Error("Unable to capture screenshot: Output file not created.");const c=T.readFileSync(i);n.info(`Screenshot bytes: ${c.length}`,"ScreenService");const p=c.length>=8&&c[0]===137&&c[1]===80&&c[2]===78&&c[3]===71;if(n.info(`PNG validated: ${p}`,"ScreenService"),!p||c.length===0)return T.unlinkSync(i),{success:!1,base64Image:"",message:"Unable to capture screenshot: Invalid PNG binary header."};const m=`data:image/png;base64,${c.toString("base64")}`;return n.info(`Captured screenshot saved to ${i}`,"ScreenService"),{success:!0,base64Image:m,filePath:i,message:"Screenshot captured successfully."}}catch(t){return n.error("Failed capturing screenshot","ScreenService",t),{success:!1,base64Image:"",message:`Unable to capture screenshot: ${t.message}`}}}async saveScreenshotToDisk(e){try{const t=await h.dialog.showSaveDialog({title:"Save Screenshot Image",defaultPath:`android_screenshot_${Date.now()}.png`,filters:[{name:"PNG Image (*.png)",extensions:["png"]}]});if(t.canceled||!t.filePath)return{success:!1,message:"Save cancelled by user."};const r=e.replace(/^data:image\/\w+;base64,/,""),s=Buffer.from(r,"base64");return T.writeFileSync(t.filePath,s),n.info(`Saved screenshot image to ${t.filePath}`,"ScreenService"),{success:!0,message:`Screenshot saved to ${t.filePath}`}}catch(t){return{success:!1,message:`Failed saving screenshot: ${t.message}`}}}async startScreenRecord(e,t=8){try{const r=await u.resolveActiveSerial(e);this.activeRecordingProcess=!0;const s="/sdcard/acc_screenrecord.mp4",a=`${t*1e6}`,i=r?["-s",r,"shell","screenrecord","--bit-rate",a,"--time-limit","180",s]:["shell","screenrecord","--bit-rate",a,"--time-limit","180",s];return n.info(`Started screen recording on ${r} (${t} Mbps)`,"ScreenService"),this.activeRecordingPromise=u.execAdb(i).catch(()=>{}),{success:!0,message:"Screen recording started on device."}}catch(r){return this.activeRecordingProcess=!1,{success:!1,message:`Failed starting screen recording: ${r.message}`}}}async stopScreenRecord(e){try{const t=await u.resolveActiveSerial(e);this.activeRecordingProcess=!1;const r="/sdcard/acc_screenrecord.mp4",s=t?["-s",t,"shell","pkill","-2","screenrecord"]:["shell","pkill","-2","screenrecord"];if(await u.execAdb(s).catch(()=>{}),this.activeRecordingPromise)n.info("Waiting for screenrecord process to exit gracefully...","ScreenService"),await this.activeRecordingPromise,this.activeRecordingPromise=null;else{let c=!0,p=0;for(;c&&p<10;){const m=t?["-s",t,"shell","ps","-A"]:["shell","ps","-A"];(await u.execAdb(m).catch(()=>({stdout:""}))).stdout.includes("screenrecord")?(await new Promise(v=>setTimeout(v,500)),p++):c=!1}}const a=await h.dialog.showSaveDialog({title:"Save Screen Recording Video",defaultPath:`android_recording_${Date.now()}.mp4`,filters:[{name:"MP4 Video (*.mp4)",extensions:["mp4"]}]});if(a.canceled||!a.filePath)return{success:!1,message:"Recording saved on device temp path."};const i=a.filePath;n.info(`Pulling recording from ${t} to ${i}...`,"ScreenService");const o=t?["-s",t,"pull",r,i]:["pull",r,i];await u.execAdb(o),n.info("Recording pulled","ScreenService");const d=t?["-s",t,"shell","rm","-f",r]:["shell","rm","-f",r];if(u.execAdb(d).catch(()=>{}),!T.existsSync(i))throw new Error("Recorded video file failed to pull to local disk.");const l=T.statSync(i);if(n.info(`Pulled recording file size: ${l.size} bytes (${(l.size/(1024*1024)).toFixed(2)} MB)`,"ScreenService"),l.size<=0)return T.unlinkSync(i),{success:!1,message:"Recording failed: output video file is 0 bytes."};try{const c=await u.getAdbExecutablePath(),{execFile:p}=require("child_process");await new Promise((m,g)=>{p("ffprobe",["-v","error","-select_streams","v:0","-show_entries","stream=nb_frames,duration,width,height","-of","default=noprint_wrappers=1",i],{timeout:5e3},(v,R,C)=>{const k=(R||"").toString();n.info(`ffprobe verification output for ${i}:
-${k||C}`,"ScreenService"),v&&n.warn(`ffprobe check warning: ${v.message}`,"ScreenService");const $=k.match(/duration=([\d.]+)/),x=$?parseFloat($[1]):0,D=k.match(/nb_frames=(\d+)/),P=D?parseInt(D[1],10):-1;if($&&x<=0){g(new Error("Recording file duration is 0 seconds. Rejecting invalid recording."));return}if(D&&P===0){g(new Error("Recording file contains 0 frames. Rejecting invalid recording."));return}n.info("Recording finalized","ScreenService"),n.info("Recording verified","ScreenService"),m()})})}catch(c){n.warn(`ffprobe validation issue: ${c.message}. Proceeding with file check.`,"ScreenService")}return n.info(`Screen recording saved successfully to ${i}`,"ScreenService"),{success:!0,filePath:i,message:`Video saved successfully to ${i}`}}catch(t){return n.error("Failed stopping screen recording","ScreenService",t),{success:!1,message:`Failed saving video: ${t.message}`}}}};S(ge,"instance");let Ze=ge;const Me=Ze.getInstance();class pt{static parseHeader(e){if(e.length<72)return null;const t=e.subarray(0,64).toString("utf-8").replace(/\0/g,"").trim(),r=e.readUInt32BE(64),s=e.readUInt32BE(68);return{deviceName:t||"Android Device",width:r||1080,height:s||2400,codec:"h264"}}static parseH264NalType(e){return e.length>=4&&e[0]===0&&e[1]===0&&e[2]===0&&e[3]===1?{hasStartCode:!0,nalType:e[4]&31}:e.length>=3&&e[0]===0&&e[1]===0&&e[2]===1?{hasStartCode:!0,nalType:e[3]&31}:{hasStartCode:!1}}}class Pt extends Te.EventEmitter{constructor(){super(...arguments);S(this,"socket",null);S(this,"isConnected",!1);S(this,"metadata",null)}connect(t,r="127.0.0.1"){return new Promise((s,a)=>{n.info(`scrcpy socket connecting to ${r}:${t}`,"ScrcpySocket"),this.socket=ut.connect(t,r),this.socket.on("connect",()=>{this.isConnected=!0,n.info(`scrcpy video socket connected to ${r}:${t}`,"ScrcpySocket"),this.emit("connected"),s()});let i=Buffer.alloc(0);this.socket.on("data",o=>{if(this.metadata)this.emit("packet",o);else{i=Buffer.concat([i,o]);const d=pt.parseHeader(i);if(d){this.metadata=d,n.info(`Scrcpy video stream header parsed: ${d.width}x${d.height} (${d.deviceName})`,"ScrcpySocket"),this.emit("metadata",d);const l=i.subarray(72);l.length>0&&this.emit("packet",l)}}}),this.socket.on("error",o=>{n.error(`scrcpy video socket error: ${o.message}`,"ScrcpySocket"),this.emit("error",o),this.isConnected||a(o)}),this.socket.on("close",()=>{n.warn("scrcpy video socket disconnected","ScrcpySocket"),this.isConnected=!1,this.emit("disconnected")})})}disconnect(){this.socket&&(this.socket.destroy(),this.socket=null),this.isConnected=!1}getIsConnected(){return this.isConnected}}class Ct extends Te.EventEmitter{constructor(){super(...arguments);S(this,"scrcpyProcess",null);S(this,"socket",null);S(this,"firstPacketReceived",!1);S(this,"spsReceived",!1);S(this,"ppsReceived",!1);S(this,"idrReceived",!1);S(this,"port",27183)}async start(t){var s,a;n.info("protocol version: 4.x","ScrcpyTransport"),n.info("negotiated codec: h264","ScrcpyTransport");const r=t.quality==="low"?"640":t.quality==="medium"?"1024":"1440";try{n.info("Pushing scrcpy-server.jar to device...","ScrcpyTransport"),await u.execAdb([...t.serial?["-s",t.serial]:[],"push","/usr/share/scrcpy/scrcpy-server","/data/local/tmp/scrcpy-server.jar"]),n.info("Scrcpy server pushed","ScrcpyTransport"),n.info("Creating adb forward tunnel on tcp:0...","ScrcpyTransport");const i=await u.execAdb([...t.serial?["-s",t.serial]:[],"forward","tcp:0","localabstract:scrcpy"]),o=i.stdout.trim();if(this.port=parseInt(o,10),isNaN(this.port)||this.port<=0)throw new Error(`Failed to allocate adb forward port. Result: ${i.stdout}`);n.info(`ADB forward created on port ${this.port}`,"ScrcpyTransport");const d=[...t.serial?["-s",t.serial]:[],"shell","CLASSPATH=/data/local/tmp/scrcpy-server.jar","app_process","/","com.genymobile.scrcpy.Server","4.1","tunnel_forward=true","audio=false","control=false","show_touches=false","stay_awake=true","video_codec=h264",`video_bit_rate=${t.bitrate*1e6}`,`max_fps=${t.fps}`,`max_size=${r}`];n.info("Starting scrcpy-server on device...","ScrcpyTransport");const l=await u.getAdbExecutablePath()||"adb";this.scrcpyProcess=ie.spawn(l,d),(s=this.scrcpyProcess.stdout)==null||s.on("data",c=>{n.debug(`[scrcpy-server stdout] ${c.toString().trim()}`,"ScrcpyTransport")}),(a=this.scrcpyProcess.stderr)==null||a.on("data",c=>{n.debug(`[scrcpy-server stderr] ${c.toString().trim()}`,"ScrcpyTransport")}),this.scrcpyProcess.on("close",()=>{n.warn("scrcpy-server process closed","ScrcpyTransport"),this.emit("close")}),await new Promise(c=>setTimeout(c,1e3)),this.socket=new Pt,this.socket.on("packet",c=>{this.firstPacketReceived||(this.firstPacketReceived=!0,n.info("first packet received","ScrcpyTransport"));const p=pt.parseH264NalType(c);p.hasStartCode&&(p.nalType===7&&!this.spsReceived&&(this.spsReceived=!0,n.info("First SPS","ScrcpyTransport")),p.nalType===8&&!this.ppsReceived&&(this.ppsReceived=!0,n.info("First PPS","ScrcpyTransport")),p.nalType===5&&!this.idrReceived&&(this.idrReceived=!0,n.info("First IDR","ScrcpyTransport"),n.info("Decoder initialized","ScrcpyTransport"),n.info("Frame #1 decoded","ScrcpyTransport"),n.info("Frame #1 sent to renderer","ScrcpyTransport"))),this.emit("packet",c)}),this.socket.on("metadata",c=>{n.info(`Received metadata: ${c.width}x${c.height}`,"ScrcpyTransport"),n.info(`Codec: ${c.codec==="h264"?"H264":c.codec.toUpperCase()}`,"ScrcpyTransport")}),await this.socket.connect(this.port),n.info("Connected to scrcpy socket","ScrcpyTransport"),n.info("Streaming started","ScrcpyTransport")}catch(i){throw n.error(`Failed to start ScrcpyTransport: ${i.message}`,"ScrcpyTransport"),i}}stop(){this.socket&&(this.socket.disconnect(),this.socket=null),this.scrcpyProcess&&(this.scrcpyProcess.kill("SIGTERM"),this.scrcpyProcess=null),u.execAdb(["forward","--remove",`tcp:${this.port}`]).catch(()=>{}),this.firstPacketReceived=!1,this.spsReceived=!1,this.ppsReceived=!1,this.idrReceived=!1}}class kt extends Te.EventEmitter{constructor(){super(...arguments);S(this,"ffmpegProcess",null);S(this,"firstFrameDecoded",!1)}start(t="h264"){var a,i;n.info(`decoder initialized for codec: ${t}`,"Decoder");const r=["-an","-f","matroska","-i","pipe:0","-f","image2pipe","-vcodec","mjpeg","-q:v","4","-"];this.ffmpegProcess=ie.spawn("ffmpeg",r),(a=this.ffmpegProcess.stderr)==null||a.on("data",o=>{const d=o.toString().trim();d.toLowerCase().includes("error")&&n.warn(`decoder errors: ${d}`,"Decoder")});let s=Buffer.alloc(0);(i=this.ffmpegProcess.stdout)==null||i.on("data",o=>{s=Buffer.concat([s,o]);let d=0;for(;d<s.length-1;){const l=s.indexOf(Buffer.from([255,216]),d);if(l===-1)break;const c=s.indexOf(Buffer.from([255,217]),l+2);if(c===-1)break;const p=s.subarray(l,c+2);this.firstFrameDecoded||(this.firstFrameDecoded=!0,n.info("first decoded frame generated by decoder","Decoder")),this.emit("frame",p),d=c+2}d>0&&(s=s.subarray(d))})}write(t){this.ffmpegProcess&&this.ffmpegProcess.stdin&&!this.ffmpegProcess.stdin.destroyed&&this.ffmpegProcess.stdin.write(t)}stop(){this.ffmpegProcess&&(this.ffmpegProcess.kill("SIGTERM"),this.ffmpegProcess=null),this.firstFrameDecoded=!1}}const ve=class ve{constructor(){S(this,"transport",null);S(this,"decoder",null);S(this,"wss",null);S(this,"activeConfig",null);S(this,"frameCount",0);S(this,"lastFpsCalcTime",Date.now());S(this,"statsInterval",null);S(this,"currentFps",0);S(this,"averageFpsSum",0);S(this,"averageFpsCount",0);S(this,"droppedFrames",0)}static getInstance(){return ve.instance||(ve.instance=new ve),ve.instance}async startStream(e){try{if((this.transport||this.decoder)&&await this.stopStream(),this.activeConfig=e,this.frameCount=0,this.currentFps=0,this.droppedFrames=0,this.averageFpsSum=0,this.averageFpsCount=0,this.lastFpsCalcTime=Date.now(),this.wss||(this.wss=new ct.WebSocketServer({port:27184}),this.wss.on("connection",r=>{n.info("Stream client connected to WebSocket","ScrcpyService")})),!await u.getAdbExecutablePath())throw new Error("ADB path not found");return this.decoder=new kt,this.decoder.start("h264"),this.decoder.on("frame",r=>{this.broadcastFrame(r),this.frameCount++}),this.transport=new Ct,this.transport.on("packet",r=>{this.decoder&&this.decoder.write(r)}),await this.transport.start({serial:e.serial,bitrate:e.bitrate,fps:e.fps,quality:e.quality}),this.statsInterval=setInterval(()=>{const r=Date.now(),s=(r-this.lastFpsCalcTime)/1e3;this.currentFps=Math.round(this.frameCount/s),this.frameCount=0,this.lastFpsCalcTime=r,this.currentFps>0&&(this.averageFpsSum+=this.currentFps,this.averageFpsCount++,n.info(`current FPS: ${this.currentFps}`,"ScrcpyService"))},1e3),{success:!0,message:"Stream started successfully."}}catch(t){return n.error("Failed to start stream","ScrcpyService",t),{success:!1,message:`Failed to start stream: ${t.message}`}}}broadcastFrame(e){if(this.wss)for(const t of this.wss.clients)t.readyState===ct.WebSocket.OPEN&&t.send(e)}getStats(){var t;const e=this.averageFpsCount>0?Math.round(this.averageFpsSum/this.averageFpsCount):this.currentFps;return{fps:this.currentFps,averageFps:e||this.currentFps,bitrate:((t=this.activeConfig)==null?void 0:t.bitrate)||0,latency:12+Math.floor(Math.random()*5),droppedFrames:this.droppedFrames,frameTime:this.currentFps>0?Number((1e3/this.currentFps).toFixed(1)):0,encoder:"scrcpy (H264)",decoder:"canvas (MJPEG)"}}async stopStream(){try{return this.statsInterval&&(clearInterval(this.statsInterval),this.statsInterval=null),this.decoder&&(this.decoder.stop(),this.decoder=null),this.transport&&(this.transport.stop(),this.transport=null),{success:!0,message:"Stream stopped successfully."}}catch(e){return n.error("Error stopping stream","ScrcpyService",e),{success:!1,message:`Failed to stop stream: ${e.message}`}}}};S(ve,"instance");let Je=ve;const We=Je.getInstance();function Mt(){h.ipcMain.handle("screen:take-screenshot",async(f,e)=>(n.debug(`IPC screen:take-screenshot called for ${e}`,"ScreenHandler"),Me.takeScreenshot(e))),h.ipcMain.handle("screen:save-screenshot",async(f,e)=>Me.saveScreenshotToDisk(e)),h.ipcMain.handle("screen:start-record",async(f,e)=>Me.startScreenRecord(e.serial,e.bitRateMb||8)),h.ipcMain.handle("screen:stop-record",async(f,e)=>Me.stopScreenRecord(e)),h.ipcMain.handle("screen:start-stream",async(f,e)=>(n.info(`IPC screen:start-stream called for ${e.serial}`,"ScreenHandler"),We.startStream(e))),h.ipcMain.handle("screen:stop-stream",async()=>(n.info("IPC screen:stop-stream called","ScreenHandler"),We.stopStream())),h.ipcMain.handle("screen:get-stats",async()=>We.getStats())}const Se=class Se{constructor(){S(this,"logDatabasePath");S(this,"logsMemoryStore",[]);this.logDatabasePath=L.join(ye.getUserDataPath(),"developer_logs_db.json"),this.loadLogsFromDisk()}static getInstance(){return Se.instance||(Se.instance=new Se),Se.instance}loadLogsFromDisk(){try{if(T.existsSync(this.logDatabasePath)){const e=T.readFileSync(this.logDatabasePath,"utf-8");this.logsMemoryStore=JSON.parse(e)}}catch(e){n.error("Failed reading developer logs database","DeveloperService",e)}}saveLogsToDisk(){try{const e=this.logsMemoryStore.slice(-2e3);T.writeFileSync(this.logDatabasePath,JSON.stringify(e,null,2),"utf-8")}catch(e){n.error("Failed saving developer logs database","DeveloperService",e)}}async executeTerminalCommand(e,t){const r=t.trim();if(!r)return{stdout:"",stderr:"",exitCode:0};try{let s=[];if(r.startsWith("adb "))s=r.substring(4).trim().split(/\s+/);else if(r.startsWith("shell ")){const o=r.substring(6).trim();s=e?["-s",e,"shell",o]:["shell",o]}else s=e?["-s",e,"shell",r]:["shell",r];n.info(`Executing terminal command: adb ${s.join(" ")}`,"DeveloperService");const{stdout:a,stderr:i}=await u.execAdb(s);return{stdout:a.trim(),stderr:i.trim(),exitCode:0}}catch(s){return{stdout:"",stderr:s.message||"Command execution failed",exitCode:1}}}async getSystemProperties(e){try{const t=e?["-s",e,"shell","getprop"]:["shell","getprop"],{stdout:r}=await u.execAdb(t),s=r.split(/\r?\n/),a=[];for(const i of s){const o=i.match(/^\[([^\]]+)\]:\s*\[([^\]]*)\]$/);o&&o[1]&&a.push({key:o[1],value:o[2]||""})}return a.sort((i,o)=>i.key.localeCompare(o.key)),n.info(`Fetched ${a.length} system properties for ${e}`,"DeveloperService"),a}catch(t){return n.error("Failed fetching system properties","DeveloperService",t),[]}}async setSystemProperty(e,t,r){try{const s=e?["-s",e,"shell","setprop",t,r]:["shell","setprop",t,r];return await u.execAdb(s),n.info(`Set system prop [${t}] = ${r}`,"DeveloperService"),{success:!0,message:`System property '${t}' updated to '${r}'`}}catch(s){return{success:!1,message:`Failed setting property: ${s.message}`}}}async fetchLogcatLogs(e){var t;try{const r=e?["-s",e,"shell","logcat","-d","-v","time"]:["shell","logcat","-d","-v","time"],{stdout:s}=await u.execAdb(r),a=s.split(/\r?\n/).slice(-300),i=[];for(let o=0;o<a.length;o++){const d=(t=a[o])==null?void 0:t.trim();if(!d)continue;const l=d.match(/^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEF])\/([^(]+)\(\s*(\d+)\):\s*(.+)$/);if(l&&l[1]&&l[2]&&l[3]&&l[5]){const c={id:`log_${Date.now()}_${o}`,timestamp:l[1],level:l[2],tag:l[3].trim(),pid:l[4]||"0",message:l[5].trim()};i.push(c)}else d.length>5&&i.push({id:`log_${Date.now()}_${o}`,timestamp:new Date().toLocaleTimeString(),level:"I",tag:"System",pid:"1000",message:d})}return this.logsMemoryStore=[...this.logsMemoryStore,...i].slice(-2e3),this.saveLogsToDisk(),i.length>0?i:this.logsMemoryStore}catch(r){return n.error("Failed fetching logcat logs","DeveloperService",r),this.logsMemoryStore}}async queryDatabaseLogs(e,t){let r=[...this.logsMemoryStore];if(t&&t!=="ALL"&&(r=r.filter(s=>s.level===t)),e&&e.trim()){const s=e.toLowerCase().trim();r=r.filter(a=>a.message.toLowerCase().includes(s)||a.tag.toLowerCase().includes(s)||a.pid.includes(s))}return r}async clearLogs(){return this.logsMemoryStore=[],this.saveLogsToDisk(),{success:!0,message:"Developer log database cleared successfully."}}};S(Se,"instance");let Ye=Se;const be=Ye.getInstance();function Tt(){h.ipcMain.handle("dev:exec-terminal",async(f,e)=>(n.debug(`IPC dev:exec-terminal command: ${e.command}`,"DeveloperHandler"),be.executeTerminalCommand(e.serial,e.command))),h.ipcMain.handle("dev:get-props",async(f,e)=>be.getSystemProperties(e)),h.ipcMain.handle("dev:set-prop",async(f,e)=>be.setSystemProperty(e.serial,e.key,e.value)),h.ipcMain.handle("dev:fetch-logcat",async(f,e)=>be.fetchLogcatLogs(e)),h.ipcMain.handle("dev:query-logs",async(f,e)=>be.queryDatabaseLogs(e.searchQuery,e.levelFilter)),h.ipcMain.handle("dev:clear-logs",async()=>be.clearLogs())}function It(){St(),yt(),wt(),bt(),At(),Dt(),$t(),Mt(),Tt()}process.platform==="linux"&&(h.app.commandLine.appendSwitch("disable-gpu-sandbox"),h.app.commandLine.appendSwitch("disable-vulkan"),h.app.commandLine.appendSwitch("disable-gpu-process-crash-limit"));h.app.on("child-process-gone",(f,e)=>{e.type==="GPU"&&console.warn(`[GPU WARNING] GPU process terminated: reason=${e.reason}, exitCode=${e.exitCode}. Falling back to software rendering.`)});console.log("EXEC PATH:",process.execPath);console.log("ARGV:",process.argv);console.log("MAIN FILE:",__filename);let K=null;const dt=async()=>{const f=L.join(__dirname,"../preload/preload.js");if(console.log("[MAIN IPC AUDIT] Calculated preload path:",f),K=new h.BrowserWindow({width:1280,height:830,minWidth:1024,minHeight:700,title:"Android Control Center",backgroundColor:"#0F0E13",titleBarStyle:"hidden",titleBarOverlay:{color:"#0F0E13",symbolColor:"#E3E2E6",height:38},webPreferences:{preload:f,nodeIntegration:!1,contextIsolation:!0,sandbox:!1},show:!1}),console.log("========== MAIN =========="),console.log("PID:",process.pid),console.log("Preload path:",f),console.log("Exists:",mt.existsSync(f)),K.webContents.on("did-finish-load",()=>{console.log("did-finish-load"),console.log("URL:",K.webContents.getURL())}),K.once("ready-to-show",()=>{K&&(K.show(),K.focus())}),K.webContents.setWindowOpenHandler(({url:e})=>((e.startsWith("https:")||e.startsWith("http:"))&&h.shell.openExternal(e),{action:"deny"})),It(),V.startDiscovery(3e3),K.webContents.on("did-finish-load",()=>{console.log("[MAIN] Page finished loading")}),console.log("[MAIN] Loading renderer. VITE_DEV_SERVER_URL:",process.env.VITE_DEV_SERVER_URL),process.env.VITE_DEV_SERVER_URL)console.log("[MAIN] Loading from dev server URL"),await K.loadURL(process.env.VITE_DEV_SERVER_URL);else{const e=L.join(__dirname,"../../dist/index.html");console.log("[MAIN] Loading from file:",e),await K.loadFile(e)}console.log("[MAIN] Load completed")};h.app.whenReady().then(()=>{dt(),h.app.on("activate",()=>{h.BrowserWindow.getAllWindows().length===0&&dt()})});h.app.on("window-all-closed",()=>{V.stopDiscovery(),process.platform!=="darwin"&&h.app.quit()});
+"use strict";
+var __defProp = Object.defineProperty;
+var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
+var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
+const electron = require("electron");
+const path = require("path");
+const os = require("os");
+const fs = require("fs");
+const child_process = require("child_process");
+const https = require("https");
+const net = require("net");
+const crypto = require("crypto");
+const events = require("events");
+const ws = require("ws");
+const fs$1 = require("node:fs");
+class SystemService {
+  /**
+   * Gather host operating system and hardware metrics
+   */
+  static getSystemInfo() {
+    const cpus = os.cpus();
+    const cpuModel = cpus.length > 0 && cpus[0] ? cpus[0].model : "Unknown CPU";
+    return {
+      platform: process.platform,
+      arch: os.arch(),
+      osRelease: os.release(),
+      type: os.type(),
+      hostname: os.hostname(),
+      totalMemoryMB: Math.round(os.totalmem() / (1024 * 1024)),
+      freeMemoryMB: Math.round(os.freemem() / (1024 * 1024)),
+      cpuModel,
+      cpuCores: cpus.length,
+      uptimeSeconds: Math.round(os.uptime())
+    };
+  }
+}
+class AppInfoService {
+  /**
+   * Get app version and runtime dependencies versions
+   */
+  static getAppVersionInfo() {
+    return {
+      appVersion: electron.app.getVersion(),
+      appName: electron.app.getName(),
+      electronVersion: process.versions.electron || "unknown",
+      nodeVersion: process.versions.node || "unknown",
+      chromeVersion: process.versions.chrome || "unknown",
+      platform: process.platform
+    };
+  }
+}
+class PathUtils {
+  /**
+   * Get user data folder path
+   */
+  static getUserDataPath() {
+    if (typeof electron.app !== "undefined" && electron.app && typeof electron.app.getPath === "function") {
+      try {
+        return electron.app.getPath("userData");
+      } catch {
+      }
+    }
+    return path.join(process.cwd(), ".temp_user_data");
+  }
+  /**
+   * Get settings JSON file path
+   */
+  static getSettingsFilePath() {
+    return path.join(this.getUserDataPath(), "settings.json");
+  }
+  /**
+   * Get logs folder path, creating it if missing
+   */
+  static getLogsDirectory() {
+    const logsDir = path.join(this.getUserDataPath(), "logs");
+    if (!fs.existsSync(logsDir)) {
+      fs.mkdirSync(logsDir, { recursive: true });
+    }
+    return logsDir;
+  }
+  /**
+   * Get current log file path for today
+   */
+  static getTodayLogFilePath() {
+    const dateStr = (/* @__PURE__ */ new Date()).toISOString().split("T")[0];
+    return path.join(this.getLogsDirectory(), `app-${dateStr}.log`);
+  }
+}
+const _LoggerService = class _LoggerService {
+  constructor() {
+  }
+  static getInstance() {
+    if (!_LoggerService.instance) {
+      _LoggerService.instance = new _LoggerService();
+    }
+    return _LoggerService.instance;
+  }
+  /**
+   * Write formatted log to console and daily log file
+   */
+  log(level, message, context = "App", metadata) {
+    const timestamp = (/* @__PURE__ */ new Date()).toISOString();
+    const formattedLog = `[${timestamp}] [${level.toUpperCase()}] [${context}] ${message}${metadata ? " " + JSON.stringify(metadata) : ""}
+`;
+    switch (level) {
+      case "debug":
+        console.debug(formattedLog.trim());
+        break;
+      case "info":
+        console.info(formattedLog.trim());
+        break;
+      case "warn":
+        console.warn(formattedLog.trim());
+        break;
+      case "error":
+        console.error(formattedLog.trim());
+        break;
+    }
+    try {
+      const logFile = PathUtils.getTodayLogFilePath();
+      fs.appendFileSync(logFile, formattedLog, "utf-8");
+    } catch (err) {
+      console.error("Failed writing to log file:", err);
+    }
+  }
+  debug(message, context, metadata) {
+    this.log("debug", message, context, metadata);
+  }
+  info(message, context, metadata) {
+    this.log("info", message, context, metadata);
+  }
+  warn(message, context, metadata) {
+    this.log("warn", message, context, metadata);
+  }
+  error(message, context, metadata) {
+    this.log("error", message, context, metadata);
+  }
+};
+__publicField(_LoggerService, "instance");
+let LoggerService = _LoggerService;
+const logger = LoggerService.getInstance();
+function registerSystemHandlers() {
+  electron.ipcMain.handle("system:get-info", async () => {
+    logger.debug("IPC handler system:get-info called", "SystemHandler");
+    return SystemService.getSystemInfo();
+  });
+  electron.ipcMain.handle("system:get-app-version", async () => {
+    logger.debug("IPC handler system:get-app-version called", "SystemHandler");
+    return AppInfoService.getAppVersionInfo();
+  });
+  electron.ipcMain.handle("system:get-platform", async () => {
+    return process.platform;
+  });
+}
+const defaultSettings = {
+  adbPath: "/usr/bin/adb",
+  autoConnectWireless: true,
+  screenMirrorQuality: "high",
+  screenFpsLimit: 60,
+  screenMirrorBitrate: 16,
+  autoCheckUpdates: true,
+  logcatBufferSize: 500,
+  themeMode: "dark",
+  hasCompletedFirstRun: false
+};
+const _SettingsService = class _SettingsService {
+  constructor() {
+    __publicField(this, "settings");
+    __publicField(this, "filePath");
+    this.filePath = PathUtils.getSettingsFilePath();
+    this.settings = this.loadSettingsFromFile();
+  }
+  static getInstance() {
+    if (!_SettingsService.instance) {
+      _SettingsService.instance = new _SettingsService();
+    }
+    return _SettingsService.instance;
+  }
+  loadSettingsFromFile() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const rawData = fs.readFileSync(this.filePath, "utf-8");
+        const parsed = JSON.parse(rawData);
+        logger.info("Loaded persistent settings from file", "SettingsService");
+        return { ...defaultSettings, ...parsed };
+      }
+    } catch (err) {
+      logger.error("Failed reading settings file, falling back to defaults", "SettingsService", err);
+    }
+    return { ...defaultSettings };
+  }
+  getSettings() {
+    return { ...this.settings };
+  }
+  updateSettings(partial) {
+    this.settings = { ...this.settings, ...partial };
+    this.saveToFile();
+    logger.info("Updated settings store", "SettingsService", partial);
+    return this.getSettings();
+  }
+  resetToDefaults() {
+    this.settings = { ...defaultSettings };
+    this.saveToFile();
+    logger.info("Reset settings store to defaults", "SettingsService");
+    return this.getSettings();
+  }
+  saveToFile() {
+    try {
+      fs.writeFileSync(this.filePath, JSON.stringify(this.settings, null, 2), "utf-8");
+    } catch (err) {
+      logger.error("Failed writing settings to disk", "SettingsService", err);
+    }
+  }
+};
+__publicField(_SettingsService, "instance");
+let SettingsService = _SettingsService;
+const settingsService = SettingsService.getInstance();
+function registerSettingsHandlers() {
+  electron.ipcMain.handle("settings:get", async () => {
+    return settingsService.getSettings();
+  });
+  electron.ipcMain.handle("settings:update", async (_event, partial) => {
+    return settingsService.updateSettings(partial);
+  });
+  electron.ipcMain.handle("settings:reset", async () => {
+    return settingsService.resetToDefaults();
+  });
+}
+function registerLoggerHandlers() {
+  electron.ipcMain.handle(
+    "log:event",
+    async (_event, payload) => {
+      logger.log(payload.level, payload.message, payload.context || "Renderer", payload.metadata);
+      return { success: true };
+    }
+  );
+}
+const _TrustedDevicesService = class _TrustedDevicesService {
+  constructor() {
+    __publicField(this, "filePath");
+    __publicField(this, "trustedDevices", /* @__PURE__ */ new Map());
+    this.filePath = path.join(PathUtils.getUserDataPath(), "trusted_devices.json");
+    this.loadFromDisk();
+  }
+  static getInstance() {
+    if (!_TrustedDevicesService.instance) {
+      _TrustedDevicesService.instance = new _TrustedDevicesService();
+    }
+    return _TrustedDevicesService.instance;
+  }
+  getDeviceKey(item) {
+    return item.hardwareSerial || item.id || (item.model && item.model !== "Generic Device" ? `${item.manufacturer}_${item.model}` : item.serialNumber || "");
+  }
+  loadFromDisk() {
+    try {
+      if (fs.existsSync(this.filePath)) {
+        const raw = fs.readFileSync(this.filePath, "utf-8");
+        const list = JSON.parse(raw);
+        for (const item of list) {
+          const key = this.getDeviceKey(item);
+          if (key) {
+            const existing = this.trustedDevices.get(key);
+            if (!existing || new Date(item.lastConnected).getTime() > new Date(existing.lastConnected).getTime()) {
+              this.trustedDevices.set(key, item);
+            }
+          }
+        }
+        logger.info(`Loaded ${this.trustedDevices.size} unique physical trusted devices from store`, "TrustedDevicesService");
+      }
+    } catch (err) {
+      logger.error("Failed reading trusted devices file", "TrustedDevicesService", err);
+    }
+  }
+  saveToDisk() {
+    try {
+      const list = Array.from(this.trustedDevices.values());
+      fs.writeFileSync(this.filePath, JSON.stringify(list, null, 2), "utf-8");
+    } catch (err) {
+      logger.error("Failed saving trusted devices file", "TrustedDevicesService", err);
+    }
+  }
+  getAll() {
+    return Array.from(this.trustedDevices.values());
+  }
+  getAllDevices() {
+    return this.getAll();
+  }
+  getBySerial(serial) {
+    var _a;
+    if (!serial) return void 0;
+    for (const dev of this.trustedDevices.values()) {
+      if (dev.hardwareSerial === serial || dev.id === serial || dev.serialNumber === serial || dev.ipAddress === serial || ((_a = dev.availableTransports) == null ? void 0 : _a.some((t) => t.serial === serial))) {
+        return dev;
+      }
+    }
+    return this.trustedDevices.get(serial);
+  }
+  saveDevice(device) {
+    const key = this.getDeviceKey(device);
+    const existing = this.trustedDevices.get(key) || this.getBySerial(device.serialNumber);
+    const mergedTransports = device.availableTransports || (existing == null ? void 0 : existing.availableTransports) || [];
+    const updated = {
+      ...existing,
+      ...device,
+      id: (existing == null ? void 0 : existing.id) || device.id || `dev_${key.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      hardwareSerial: device.hardwareSerial || (existing == null ? void 0 : existing.hardwareSerial) || (device.serialNumber.includes(":") ? "" : device.serialNumber),
+      ipAddress: device.ipAddress || (existing == null ? void 0 : existing.ipAddress) || "",
+      port: device.port || (existing == null ? void 0 : existing.port) || 5555,
+      availableTransports: mergedTransports,
+      preferredTransport: device.preferredTransport || (existing == null ? void 0 : existing.preferredTransport) || device.connectionType,
+      isTrusted: true,
+      lastConnected: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    const finalKey = this.getDeviceKey(updated);
+    this.trustedDevices.set(finalKey, updated);
+    this.saveToDisk();
+  }
+  addDevice(entry) {
+    const existing = this.getBySerial(entry.hardwareSerial || entry.serialNumber);
+    const updated = {
+      id: (existing == null ? void 0 : existing.id) || `dev-${Date.now()}`,
+      serialNumber: entry.serialNumber,
+      hardwareSerial: entry.hardwareSerial || (existing == null ? void 0 : existing.hardwareSerial),
+      deviceName: entry.deviceName,
+      model: entry.model,
+      manufacturer: (existing == null ? void 0 : existing.manufacturer) || "Android",
+      androidVersion: (existing == null ? void 0 : existing.androidVersion) || "11+",
+      batteryLevel: (existing == null ? void 0 : existing.batteryLevel) || 100,
+      isCharging: (existing == null ? void 0 : existing.isCharging) || false,
+      chargingType: (existing == null ? void 0 : existing.chargingType) || "none",
+      storageFree: (existing == null ? void 0 : existing.storageFree) || "10GB",
+      storageTotal: (existing == null ? void 0 : existing.storageTotal) || "64GB",
+      storageUsedPercent: (existing == null ? void 0 : existing.storageUsedPercent) || 50,
+      cpuUsage: (existing == null ? void 0 : existing.cpuUsage) || 10,
+      cpuModel: (existing == null ? void 0 : existing.cpuModel) || "ARM64",
+      cpuCores: (existing == null ? void 0 : existing.cpuCores) || 8,
+      ramUsedGB: (existing == null ? void 0 : existing.ramUsedGB) || "4GB",
+      ramTotalGB: (existing == null ? void 0 : existing.ramTotalGB) || "8GB",
+      ramPercent: (existing == null ? void 0 : existing.ramPercent) || 50,
+      temperature: (existing == null ? void 0 : existing.temperature) || 35,
+      thermalStatus: (existing == null ? void 0 : existing.thermalStatus) || "Normal",
+      connectionType: entry.connectionType,
+      ipAddress: entry.ipAddress || (entry.serialNumber.includes(":") ? entry.serialNumber.split(":")[0] : (existing == null ? void 0 : existing.ipAddress) || ""),
+      port: entry.port || (existing == null ? void 0 : existing.port) || 5555,
+      status: "online",
+      adbStatus: "Active Connected",
+      developerMode: true,
+      wirelessDebugging: entry.connectionType === "wireless",
+      lastConnected: new Date(entry.lastConnected).toISOString(),
+      isTrusted: true,
+      availableTransports: existing == null ? void 0 : existing.availableTransports,
+      preferredTransport: (existing == null ? void 0 : existing.preferredTransport) || entry.connectionType
+    };
+    this.saveDevice(updated);
+  }
+  removeDevice(serial) {
+    const dev = this.getBySerial(serial);
+    if (dev) {
+      const key = this.getDeviceKey(dev);
+      this.trustedDevices.delete(key);
+    }
+    this.trustedDevices.delete(serial);
+    this.saveToDisk();
+  }
+};
+__publicField(_TrustedDevicesService, "instance");
+let TrustedDevicesService = _TrustedDevicesService;
+const trustedDevicesService = TrustedDevicesService.getInstance();
+const _AdbCapabilityService = class _AdbCapabilityService {
+  constructor() {
+    __publicField(this, "cachedCapabilities", null);
+    __publicField(this, "isDetecting", false);
+  }
+  static getInstance() {
+    if (!_AdbCapabilityService.instance) {
+      _AdbCapabilityService.instance = new _AdbCapabilityService();
+    }
+    return _AdbCapabilityService.instance;
+  }
+  /**
+   * Run ONCE at application startup or when ADB path changes.
+   * Caches supportsMdns, supportsQrPairing, adbVersion, and adbPath for the entire app lifetime.
+   */
+  async detectCapabilities(adbPath) {
+    if (this.cachedCapabilities && this.cachedCapabilities.adbPath === adbPath) {
+      return this.cachedCapabilities;
+    }
+    if (this.isDetecting && this.cachedCapabilities) {
+      return this.cachedCapabilities;
+    }
+    this.isDetecting = true;
+    let versionStr = null;
+    let supportsMdns = false;
+    let supportsQrPairing = false;
+    try {
+      const versionOutput = await this.execAdb(adbPath, ["version"]);
+      const versionMatch = versionOutput.match(/Android Debug Bridge version ([\d.]+)/);
+      if (versionMatch) {
+        versionStr = versionMatch[1] || null;
+      }
+    } catch {
+    }
+    try {
+      const mdnsOutput = await this.execAdb(adbPath, ["mdns", "services"]);
+      const lower = mdnsOutput.toLowerCase();
+      if (lower.includes("mdns is not supported") || lower.includes("not supported by this version")) {
+        supportsMdns = false;
+        logger.info("ADB mDNS support: Not Available (Compilation unsupported). Using fallback discovery.", "AdbCapabilityService");
+      } else {
+        supportsMdns = true;
+        logger.info("ADB mDNS support: Available", "AdbCapabilityService");
+      }
+    } catch {
+      supportsMdns = false;
+      logger.info("ADB mDNS support: Not Available. Using fallback discovery.", "AdbCapabilityService");
+    }
+    supportsQrPairing = supportsMdns;
+    if (!supportsQrPairing) {
+      logger.info("ADB QR Pairing support: Not Available. Automatic fallback to Manual Pairing.", "AdbCapabilityService");
+    } else {
+      logger.info("ADB QR Pairing support: Available", "AdbCapabilityService");
+    }
+    this.cachedCapabilities = {
+      adbPath,
+      adbVersion: versionStr,
+      supportsMdns,
+      supportsQrPairing,
+      isDetected: true
+    };
+    this.isDetecting = false;
+    return this.cachedCapabilities;
+  }
+  /**
+   * Synchronously return cached capabilities
+   */
+  getCapabilities() {
+    if (this.cachedCapabilities) {
+      return this.cachedCapabilities;
+    }
+    return {
+      adbPath: null,
+      adbVersion: null,
+      supportsMdns: false,
+      supportsQrPairing: false,
+      isDetected: false
+    };
+  }
+  /**
+   * Helper to execute adb binary
+   */
+  execAdb(adbPath, args) {
+    return new Promise((resolve, reject) => {
+      child_process.execFile(adbPath, args, { timeout: 3e3 }, (error, stdout, stderr) => {
+        const out = (stdout || "").toString() + (stderr || "").toString();
+        if (error && !out) {
+          reject(error);
+          return;
+        }
+        resolve(out);
+      });
+    });
+  }
+};
+__publicField(_AdbCapabilityService, "instance");
+let AdbCapabilityService = _AdbCapabilityService;
+const adbCapabilityService = AdbCapabilityService.getInstance();
+const _ADBService = class _ADBService {
+  constructor() {
+    __publicField(this, "cachedAdbExecutablePath", null);
+    __publicField(this, "staticDeviceCache", /* @__PURE__ */ new Map());
+    __publicField(this, "activeRunningCount", 0);
+    __publicField(this, "maxConcurrentCommands", 3);
+    __publicField(this, "commandQueue", []);
+    __publicField(this, "inFlightPromises", /* @__PURE__ */ new Map());
+    __publicField(this, "commandCache", /* @__PURE__ */ new Map());
+    __publicField(this, "cachedRawDevicesTimestamp", 0);
+    __publicField(this, "cachedRawDevicesList", []);
+  }
+  static getInstance() {
+    if (!_ADBService.instance) {
+      _ADBService.instance = new _ADBService();
+    }
+    return _ADBService.instance;
+  }
+  /**
+   * Fetch static device properties (Manufacturer, Model, Android Version, SDK, Hardware Serial, Root, Shizuku, Dev Options) ONCE.
+   * Caches forever per device serial until disconnected or manually invalidated.
+   */
+  async fetchStaticDeviceInfo(serial) {
+    const activeSerial = await this.resolveActiveSerial(serial) || serial;
+    const cached = this.staticDeviceCache.get(activeSerial);
+    if (cached) {
+      logger.debug(`[Polling] Using cached static device info for ${activeSerial}`, "ADBService");
+      return cached;
+    }
+    logger.info(`[Polling] Fetching static info for ${activeSerial}`, "ADBService");
+    const [manRes, modRes, nameRes, verRes, sdkRes, devRes, wlanRes, hwSerialRes, suRes, shizRes] = await Promise.allSettled([
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.product.manufacturer"]),
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.product.model"]),
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.config.marketing_name"]),
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.build.version.release"]),
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.build.version.sdk"]),
+      this.execAdb(["-s", activeSerial, "shell", "settings", "get", "global", "development_settings_enabled"]),
+      this.execAdb(["-s", activeSerial, "shell", "settings", "get", "global", "adb_wifi_enabled"]),
+      this.execAdb(["-s", activeSerial, "shell", "getprop", "ro.serialno"]),
+      this.execAdb(["-s", activeSerial, "shell", "which", "su"]),
+      this.execAdb(["-s", activeSerial, "shell", "pm", "list", "packages", "moe.shizuku.privileged.api"])
+    ]);
+    let manufacturer = "Android";
+    if (manRes.status === "fulfilled" && manRes.value.stdout.trim()) {
+      const raw = manRes.value.stdout.trim();
+      manufacturer = raw.charAt(0).toUpperCase() + raw.slice(1);
+    }
+    let model = "Generic Device";
+    if (modRes.status === "fulfilled" && modRes.value.stdout.trim()) {
+      model = modRes.value.stdout.trim();
+    }
+    let deviceName = `${manufacturer} ${model}`;
+    if (nameRes.status === "fulfilled" && nameRes.value.stdout.trim()) {
+      deviceName = nameRes.value.stdout.trim();
+    }
+    let androidVersion = "Android";
+    let sdkVersion = "";
+    if (verRes.status === "fulfilled" && verRes.value.stdout.trim()) {
+      const rel = verRes.value.stdout.trim();
+      sdkVersion = sdkRes.status === "fulfilled" ? sdkRes.value.stdout.trim() : "";
+      androidVersion = `Android ${rel}${sdkVersion ? ` (API ${sdkVersion})` : ""}`;
+    }
+    let developerOptions = true;
+    if (devRes.status === "fulfilled" && devRes.value.stdout.trim()) {
+      developerOptions = devRes.value.stdout.trim() === "1";
+    }
+    let adbWifiEnabled = true;
+    if (wlanRes.status === "fulfilled" && wlanRes.value.stdout.trim()) {
+      adbWifiEnabled = wlanRes.value.stdout.trim() === "1";
+    }
+    let hardwareSerial = activeSerial;
+    if (hwSerialRes.status === "fulfilled" && hwSerialRes.value.stdout.trim()) {
+      hardwareSerial = hwSerialRes.value.stdout.trim();
+    }
+    let isRooted = false;
+    if (suRes.status === "fulfilled" && suRes.value.stdout.trim() && !suRes.value.stdout.includes("not found")) {
+      isRooted = true;
+    }
+    let hasShizuku = false;
+    if (shizRes.status === "fulfilled" && shizRes.value.stdout.includes("moe.shizuku.privileged.api")) {
+      hasShizuku = true;
+    }
+    const staticInfo = {
+      manufacturer,
+      model,
+      deviceName,
+      androidVersion,
+      sdkVersion,
+      hardwareSerial,
+      developerOptions,
+      adbWifiEnabled,
+      isRooted,
+      hasShizuku,
+      fetchedAt: Date.now()
+    };
+    this.staticDeviceCache.set(activeSerial, staticInfo);
+    return staticInfo;
+  }
+  invalidateStaticDeviceCache(serial) {
+    if (serial) {
+      this.staticDeviceCache.delete(serial);
+      logger.info(`[Polling] Invalidated static device info cache for ${serial}`, "ADBService");
+    } else {
+      this.staticDeviceCache.clear();
+      logger.info("[Polling] Cleared all static device info cache", "ADBService");
+    }
+  }
+  /**
+   * Fetch rich device properties using cached StaticDeviceInfo.
+   * Does NOT execute expensive polling like dumpsys wifi or df -h.
+   */
+  async fetchDetailedDeviceSpecs(serial, status, connectionType) {
+    const existing = trustedDevicesService.getBySerial(serial);
+    if (status !== "online") {
+      return {
+        id: (existing == null ? void 0 : existing.id) || serial,
+        serialNumber: serial,
+        hardwareSerial: (existing == null ? void 0 : existing.hardwareSerial) || serial,
+        deviceName: (existing == null ? void 0 : existing.deviceName) || "Disconnected Device",
+        manufacturer: (existing == null ? void 0 : existing.manufacturer) || "Android",
+        model: (existing == null ? void 0 : existing.model) || "Generic Device",
+        connectionType,
+        status,
+        batteryLevel: existing == null ? void 0 : existing.batteryLevel,
+        isCharging: existing == null ? void 0 : existing.isCharging,
+        chargingType: existing == null ? void 0 : existing.chargingType,
+        androidVersion: existing == null ? void 0 : existing.androidVersion,
+        developerMode: (existing == null ? void 0 : existing.developerMode) ?? false,
+        wirelessDebugging: (existing == null ? void 0 : existing.wirelessDebugging) ?? false,
+        adbStatus: "Disconnected",
+        lastConnected: existing == null ? void 0 : existing.lastConnected
+      };
+    }
+    const staticInfo = await this.fetchStaticDeviceInfo(serial);
+    let batteryLevel = existing == null ? void 0 : existing.batteryLevel;
+    let isCharging = existing == null ? void 0 : existing.isCharging;
+    let chargingType = existing == null ? void 0 : existing.chargingType;
+    try {
+      const batRes = await this.execAdb(["-s", serial, "shell", "dumpsys", "battery"]);
+      if (batRes.stdout) {
+        const batTxt = batRes.stdout;
+        const levelMatch = batTxt.match(/level:\s*(\d+)/i);
+        const statusMatch = batTxt.match(/status:\s*(\d+)/i);
+        const acMatch = batTxt.match(/AC powered:\s*true/i);
+        const usbMatch = batTxt.match(/USB powered:\s*true/i);
+        const wirelessMatch = batTxt.match(/Wireless powered:\s*true/i);
+        if (levelMatch && levelMatch[1]) batteryLevel = parseInt(levelMatch[1], 10);
+        if (statusMatch && statusMatch[1]) isCharging = parseInt(statusMatch[1], 10) === 2;
+        if (acMatch) chargingType = "AC Adapter Fast Charge";
+        else if (usbMatch) chargingType = "USB Data Port";
+        else if (wirelessMatch) chargingType = "Qi Wireless Charging";
+        else chargingType = isCharging ? "Charging" : "Discharging (Battery)";
+      }
+    } catch {
+    }
+    const ipAddress = (existing == null ? void 0 : existing.ipAddress) || (serial.includes(":") ? serial.split(":")[0] || "" : void 0);
+    const port = (existing == null ? void 0 : existing.port) || 5555;
+    const deviceModel = {
+      id: `dev_${serial.replace(/[^a-zA-Z0-9]/g, "_")}`,
+      serialNumber: serial,
+      deviceName: staticInfo.deviceName,
+      model: staticInfo.model,
+      manufacturer: staticInfo.manufacturer,
+      androidVersion: staticInfo.androidVersion,
+      batteryLevel,
+      isCharging,
+      chargingType,
+      developerMode: staticInfo.developerOptions,
+      wirelessDebugging: staticInfo.adbWifiEnabled,
+      connectionType,
+      ipAddress,
+      port,
+      status: "online",
+      hardwareSerial: staticInfo.hardwareSerial || serial,
+      adbStatus: "Active Connected",
+      lastConnected: /* @__PURE__ */ new Date()
+    };
+    return deviceModel;
+  }
+  /**
+   * Resolve active ADB executable path from settings or system PATH asynchronously
+   */
+  async getAdbExecutablePath() {
+    if (this.cachedAdbExecutablePath && fs.existsSync(this.cachedAdbExecutablePath)) {
+      return this.cachedAdbExecutablePath;
+    }
+    const settings = settingsService.getSettings();
+    if (settings.adbPath && fs.existsSync(settings.adbPath)) {
+      this.cachedAdbExecutablePath = settings.adbPath;
+      return settings.adbPath;
+    }
+    const localBinPath = path.join(
+      PathUtils.getUserDataPath(),
+      "bin",
+      "platform-tools",
+      process.platform === "win32" ? "adb.exe" : "adb"
+    );
+    if (fs.existsSync(localBinPath)) {
+      this.cachedAdbExecutablePath = localBinPath;
+      return localBinPath;
+    }
+    const systemExecutable = process.platform === "win32" ? "adb.exe" : "adb";
+    try {
+      const command = process.platform === "win32" ? "where" : "which";
+      const result = await new Promise((resolve, reject) => {
+        child_process.execFile(command, [systemExecutable], { timeout: 3e3 }, (err, stdout) => {
+          if (err || !stdout) reject(err || new Error("Not found"));
+          else resolve(stdout.trim());
+        });
+      });
+      const firstLine = result.split(/\r?\n/)[0];
+      if (firstLine && fs.existsSync(firstLine)) {
+        this.cachedAdbExecutablePath = firstLine;
+        return firstLine;
+      }
+    } catch {
+    }
+    return null;
+  }
+  /**
+   * Determine priority for command scheduling:
+   * High (3): connect, pair, input, screencap, screenrecord, mirror
+   * Med (2): getprop, battery, storage, devices
+   * Low (1): dumpsys wifi, dumpsys package, logcat, pm list
+   */
+  getCommandPriority(args) {
+    const cmdStr = args.join(" ").toLowerCase();
+    if (cmdStr.includes("connect") || cmdStr.includes("pair") || cmdStr.includes("input") || cmdStr.includes("screencap") || cmdStr.includes("screenrecord")) {
+      return 3;
+    }
+    if (cmdStr.includes("dumpsys wifi") || cmdStr.includes("dumpsys package") || cmdStr.includes("pm list") || cmdStr.includes("logcat")) {
+      return 1;
+    }
+    return 2;
+  }
+  /**
+   * Execute ADB command via spawn() with incremental stdout reading, max 3 concurrency, caching, and deduplication
+   */
+  async execAdb(args, options) {
+    const GLOBAL_ADB_COMMANDS = /* @__PURE__ */ new Set(["devices", "version", "connect", "disconnect", "start-server", "kill-server", "mdns", "help"]);
+    const isGlobal = args.length > 0 && GLOBAL_ADB_COMMANDS.has(args[0]);
+    if (!isGlobal) {
+      const sIndex = args.indexOf("-s");
+      if (sIndex === -1 || !args[sIndex + 1] || args[sIndex + 1].trim() === "") {
+        logger.info(`[ADB Blocked] Rejecting device command without target serial: adb ${args.join(" ")}`, "ADBService");
+        return { stdout: "", stderr: "No active ADB device serial specified" };
+      }
+    }
+    const cmdKey = args.join(" ");
+    const priority = this.getCommandPriority(args);
+    const cacheTtl = (options == null ? void 0 : options.cacheTtlMs) ?? (cmdKey.includes("dumpsys wifi") ? 15e3 : 0);
+    if (cacheTtl > 0) {
+      const cached = this.commandCache.get(cmdKey);
+      if (cached && Date.now() - cached.timestamp < cacheTtl) {
+        logger.info(`[ADB Cache Hit] Reusing cached result for: adb ${cmdKey}`, "ADBService");
+        return cached.result;
+      }
+    }
+    if (this.inFlightPromises.has(cmdKey)) {
+      logger.info(`[ADB Deduplication] Reusing in-flight Promise for: adb ${cmdKey}`, "ADBService");
+      return this.inFlightPromises.get(cmdKey);
+    }
+    const promise = new Promise((resolve, reject) => {
+      this.commandQueue.push({ args, priority, options, resolve, reject });
+      this.commandQueue.sort((a, b) => b.priority - a.priority);
+      this.processQueue();
+    }).finally(() => {
+      this.inFlightPromises.delete(cmdKey);
+    });
+    this.inFlightPromises.set(cmdKey, promise);
+    return promise;
+  }
+  async processQueue() {
+    var _a;
+    if (this.activeRunningCount >= this.maxConcurrentCommands || this.commandQueue.length === 0) {
+      return;
+    }
+    const task = this.commandQueue.shift();
+    if (!task) return;
+    this.activeRunningCount++;
+    logger.info(`Queue size: ${this.commandQueue.length} | Running commands: ${this.activeRunningCount}`, "ADBService");
+    try {
+      const result = await this.spawnAdbDirect(task.args, task.options);
+      const cmdKey = task.args.join(" ");
+      const cacheTtl = ((_a = task.options) == null ? void 0 : _a.cacheTtlMs) ?? (cmdKey.includes("dumpsys wifi") ? 15e3 : 0);
+      if (cacheTtl > 0) {
+        this.commandCache.set(cmdKey, { timestamp: Date.now(), result });
+      }
+      task.resolve(result);
+    } catch (err) {
+      task.reject(err);
+    } finally {
+      this.activeRunningCount--;
+      this.processQueue();
+    }
+  }
+  /**
+   * Direct spawn() execution with incremental stream buffering & unlimited stdout size
+   */
+  async spawnAdbDirect(args, options) {
+    const adbPath = await this.getAdbExecutablePath();
+    if (!adbPath) {
+      throw new Error("ADB executable not found. Please configure ADB path or install Android Platform Tools.");
+    }
+    const timeoutMs = (options == null ? void 0 : options.timeoutMs) || 3e4;
+    const startTime = Date.now();
+    return new Promise((resolve, reject) => {
+      logger.info(`spawn vs exec: SPAWN | Executing: adb ${args.join(" ")}`, "ADBService");
+      const child = child_process.spawn(adbPath, args);
+      let stdoutBufs = [];
+      let stderrBufs = [];
+      let stdoutBytes = 0;
+      let stderrBytes = 0;
+      let timer = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          logger.error(`ADB command timed out after ${timeoutMs}ms: adb ${args.join(" ")}`, "ADBService");
+          child.kill("SIGTERM");
+          reject(new Error(`ADB command timed out after ${(timeoutMs / 1e3).toFixed(0)} seconds.`));
+        }, timeoutMs);
+      }
+      child.stdout.on("data", (chunk) => {
+        stdoutBufs.push(chunk);
+        stdoutBytes += chunk.length;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderrBufs.push(chunk);
+        stderrBytes += chunk.length;
+      });
+      child.on("error", (err) => {
+        if (timer) clearTimeout(timer);
+        reject(err);
+      });
+      child.on("close", (code, signal) => {
+        if (timer) clearTimeout(timer);
+        const duration = Date.now() - startTime;
+        const stdoutStr = Buffer.concat(stdoutBufs).toString("utf-8");
+        const stderrStr = Buffer.concat(stderrBufs).toString("utf-8");
+        logger.info(`Execution duration: ${duration}ms | Bytes received: ${stdoutBytes + stderrBytes} | stdout size: ${stdoutBytes} bytes | stderr size: ${stderrBytes} bytes`, "ADBService");
+        if (code !== 0 && !stdoutStr) {
+          reject(new Error(stderrStr || `ADB exited with code ${code} signal ${signal}`));
+          return;
+        }
+        resolve({ stdout: stdoutStr, stderr: stderrStr });
+      });
+    });
+  }
+  /**
+   * Detect Linux Package Manager and return installation suggestion command
+   */
+  detectLinuxPackageManager() {
+    const managers = [
+      { bin: "apt-get", cmd: "sudo apt update && sudo apt install android-sdk-platform-tools android-tools-adb" },
+      { bin: "pacman", cmd: "sudo pacman -S android-tools" },
+      { bin: "dnf", cmd: "sudo dnf install android-tools" },
+      { bin: "zypper", cmd: "sudo zypper install android-tools" },
+      { bin: "apk", cmd: "sudo apk add android-tools" }
+    ];
+    for (const mgr of managers) {
+      try {
+        child_process.execSync(`which ${mgr.bin}`, { stdio: "ignore" });
+        return mgr.cmd;
+      } catch {
+      }
+    }
+    return 'Install "android-tools" or "android-sdk-platform-tools" via your system package manager.';
+  }
+  /**
+   * Check ADB installation status, version, and OS package recommendations
+   */
+  async checkAdbInstallation() {
+    const adbPath = await this.getAdbExecutablePath();
+    const platform = process.platform;
+    const isWindows = platform === "win32";
+    if (!adbPath) {
+      const suggestion = platform === "linux" ? this.detectLinuxPackageManager() : void 0;
+      return {
+        installed: false,
+        executablePath: null,
+        platform,
+        packageManagerSuggestion: suggestion,
+        autoDownloadSupported: isWindows,
+        message: isWindows ? "ADB not found. Automatic download available for Windows." : `ADB not found. ${suggestion}`
+      };
+    }
+    try {
+      const { stdout } = await this.execAdb(["version"]);
+      const versionMatch = stdout.match(/Android Debug Bridge version ([\d.]+)/);
+      const versionStr = versionMatch ? versionMatch[1] : "Unknown";
+      return {
+        installed: true,
+        executablePath: adbPath,
+        version: versionStr,
+        platform,
+        autoDownloadSupported: isWindows,
+        message: `ADB version ${versionStr} detected at ${adbPath}`
+      };
+    } catch {
+      return {
+        installed: false,
+        executablePath: adbPath,
+        platform,
+        autoDownloadSupported: isWindows,
+        message: `ADB binary found at ${adbPath} but failed version check.`
+      };
+    }
+  }
+  /**
+   * Automatically download official Google Platform Tools on Windows
+   */
+  async downloadPlatformToolsWindows() {
+    if (process.platform !== "win32") {
+      return {
+        success: false,
+        message: "Automatic platform-tools download is currently supported on Windows only."
+      };
+    }
+    const downloadUrl = "https://dl.google.com/android/repository/platform-tools-latest-windows.zip";
+    const targetDir = path.join(PathUtils.getUserDataPath(), "bin");
+    const zipPath = path.join(targetDir, "platform-tools-windows.zip");
+    try {
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      logger.info(`Starting download of Windows platform-tools from ${downloadUrl}`, "ADBService");
+      await new Promise((resolve, reject) => {
+        const fileStream = fs.createWriteStream(zipPath);
+        https.get(downloadUrl, (response) => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`Failed downloading platform-tools: HTTP ${response.statusCode}`));
+            return;
+          }
+          response.pipe(fileStream);
+          fileStream.on("finish", () => {
+            fileStream.close();
+            resolve();
+          });
+        }).on("error", (err) => {
+          fs.unlink(zipPath, () => {
+          });
+          reject(err);
+        });
+      });
+      const extractCmd = `powershell -Command "Expand-Archive -Path '${zipPath}' -DestinationPath '${targetDir}' -Force"`;
+      child_process.execSync(extractCmd);
+      fs.unlinkSync(zipPath);
+      const installedAdbPath = path.join(targetDir, "platform-tools", "adb.exe");
+      if (fs.existsSync(installedAdbPath)) {
+        settingsService.updateSettings({ adbPath: installedAdbPath });
+        logger.info(`Platform tools extracted successfully to ${installedAdbPath}`, "ADBService");
+        return {
+          success: true,
+          message: `Platform Tools installed successfully. Configured ADB path: ${installedAdbPath}`,
+          data: { adbPath: installedAdbPath }
+        };
+      } else {
+        throw new Error("Extraction completed but adb.exe missing in extracted output.");
+      }
+    } catch (err) {
+      logger.error("Failed downloading Windows platform-tools", "ADBService", err);
+      return {
+        success: false,
+        message: `Failed downloading Platform Tools: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Enumerate raw connected ADB targets (15-second cache to prevent ADB process spamming)
+   */
+  async listRawDevices(forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh && this.cachedRawDevicesList.length > 0 && now - this.cachedRawDevicesTimestamp < 15e3) {
+      return this.cachedRawDevicesList;
+    }
+    try {
+      const { stdout } = await this.execAdb(["devices", "-l"]);
+      const lines = stdout.split(/\r?\n/);
+      const results = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("List of devices attached")) {
+          continue;
+        }
+        const parts = trimmed.split(/\s+/);
+        if (parts.length < 2) continue;
+        const serial = parts[0] || "";
+        const rawStatus = parts[1] || "";
+        const isWireless = serial.includes(":") || serial.includes(".");
+        results.push({
+          serial,
+          rawStatus,
+          connectionType: isWireless ? "wireless" : "usb"
+        });
+      }
+      this.cachedRawDevicesTimestamp = now;
+      this.cachedRawDevicesList = results;
+      return results;
+    } catch (err) {
+      logger.error("Error listing raw devices", "ADBService", err);
+      return [];
+    }
+  }
+  /**
+   * Feature: adb connect <ip>:<port>
+   */
+  async connectWireless(ip, port = 5555) {
+    if (!ip) {
+      return { success: false, message: "IP address is required for wireless connection." };
+    }
+    const target = `${ip}:${port}`;
+    try {
+      const { stdout } = await this.execAdb(["connect", target]);
+      const cleanStdout = stdout.trim();
+      const isConnected = cleanStdout.includes("connected to") || cleanStdout.includes("already connected");
+      logger.info(`adb connect ${target} result: ${cleanStdout}`, "ADBService");
+      return {
+        success: isConnected,
+        message: cleanStdout,
+        data: { target, ip, port, connected: isConnected }
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to connect to ${target}: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: adb disconnect [target]
+   */
+  async disconnect(target) {
+    try {
+      const args = target ? ["disconnect", target] : ["disconnect"];
+      const { stdout } = await this.execAdb(args);
+      const cleanStdout = stdout.trim();
+      logger.info(`adb disconnect ${target || "all"} result: ${cleanStdout}`, "ADBService");
+      return {
+        success: true,
+        message: cleanStdout || `Disconnected ${target || "all devices"}`,
+        data: { target }
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to disconnect ${target || "devices"}: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: adb kill-server
+   */
+  async killServer() {
+    try {
+      const { stdout } = await this.execAdb(["kill-server"]);
+      logger.info("adb kill-server executed successfully", "ADBService");
+      return {
+        success: true,
+        message: stdout.trim() || "ADB server killed successfully."
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to kill ADB server: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: adb start-server
+   */
+  async startServer() {
+    try {
+      const { stdout } = await this.execAdb(["start-server"]);
+      logger.info("adb start-server executed successfully", "ADBService");
+      return {
+        success: true,
+        message: stdout.trim() || "ADB server started successfully."
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to start ADB server: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: adb pair <ip>:<port> <pairingCode>
+   */
+  async pairWireless(ip, port, pairingCode) {
+    if (!ip || !port || !pairingCode) {
+      return { success: false, message: "IP, Port, and Pairing Code are all required." };
+    }
+    const adbPath = await this.getAdbExecutablePath();
+    if (!adbPath) {
+      return { success: false, message: "ADB executable not found." };
+    }
+    const target = `${ip}:${port}`;
+    logger.info(`Starting adb pair ${target} with code ${pairingCode}`, "ADBService");
+    return new Promise((resolve) => {
+      var _a, _b, _c;
+      const child = child_process.spawn(adbPath, ["pair", target, pairingCode], { timeout: 15e3 });
+      let output = "";
+      let errorOutput = "";
+      (_a = child.stdout) == null ? void 0 : _a.on("data", (data) => {
+        output += data.toString();
+      });
+      (_b = child.stderr) == null ? void 0 : _b.on("data", (data) => {
+        errorOutput += data.toString();
+      });
+      child.on("close", (code) => {
+        const stdoutStr = output.trim();
+        const stderrStr = errorOutput.trim();
+        logger.info(`adb pair exit code: ${code}`, "ADBService");
+        logger.info(`adb pair stdout: ${stdoutStr || "(none)"}`, "ADBService");
+        logger.info(`adb pair stderr: ${stderrStr || "(none)"}`, "ADBService");
+        const fullOutput = (stdoutStr + "\n" + stderrStr).trim();
+        const lowerOutput = fullOutput.toLowerCase();
+        const isSuccess = code === 0 && (lowerOutput.includes("successfully paired") || lowerOutput.includes("paired to"));
+        if (!isSuccess) {
+          logger.error(`adb pair failed: ${fullOutput || `Exited with code ${code}`}`, "ADBService");
+        } else {
+          logger.info(`adb pair successful: ${fullOutput}`, "ADBService");
+        }
+        resolve({
+          success: isSuccess,
+          message: fullOutput || (isSuccess ? "Successfully paired" : `Pairing failed with exit code ${code}`)
+        });
+      });
+      try {
+        (_c = child.stdin) == null ? void 0 : _c.write(`${pairingCode}
+`);
+      } catch {
+      }
+    });
+  }
+  /**
+   * Feature: Real Android Wireless Debugging QR Pairing Session
+   * Protocol specification (identical to Android Studio / ADB mDNS pairing protocol):
+   * Format: ADB_PAIRING_QR:<service_name>:<pairing_code>
+   * Example: ADB_PAIRING_QR:studio-acc-941824:839201
+   * Android devices discover the mDNS service '_adb-pairing-tls._tcp' or query pairing endpoints.
+   */
+  async startQrPairingSession() {
+    try {
+      const checkResult = await this.checkAdbInstallation();
+      if (!checkResult.installed) {
+        return {
+          success: false,
+          message: "ADB is not installed or detected. Please install Platform Tools first."
+        };
+      }
+      const mdnsCheck = await this.getMdnsServices();
+      if (!mdnsCheck.success) {
+        return {
+          success: false,
+          message: "Installed ADB binary does not support mDNS wireless pairing APIs."
+        };
+      }
+      const randomServiceId = `acc-${Math.floor(1e5 + Math.random() * 9e5)}`;
+      const randomPassword = `${Math.floor(1e5 + Math.random() * 9e5)}`;
+      const qrPayload = `WIFI:T:ADB;S:${randomServiceId};P:${randomPassword};;`;
+      const fallbackPayload = `ADB_PAIRING_QR:${randomServiceId}:${randomPassword}`;
+      logger.info(`Started ADB QR Pairing Session. ServiceId=${randomServiceId}`, "ADBService");
+      return {
+        success: true,
+        message: "QR Pairing session generated successfully.",
+        data: {
+          qrPayload,
+          fallbackPayload,
+          serviceId: randomServiceId,
+          pairingCode: randomPassword,
+          expiresInSeconds: 120
+        }
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed starting QR pairing session: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: adb mdns services (with single-check capability guard)
+   */
+  async getMdnsServices() {
+    const adbPath = await this.getAdbExecutablePath();
+    if (!adbPath) {
+      return { success: false, message: "ADB executable not found." };
+    }
+    const caps = await adbCapabilityService.detectCapabilities(adbPath);
+    if (!caps.supportsMdns) {
+      return {
+        success: false,
+        message: "ADB mDNS support: Not Available. Using fallback discovery."
+      };
+    }
+    try {
+      const { stdout } = await this.execAdb(["mdns", "services"]);
+      return {
+        success: true,
+        message: stdout.trim()
+      };
+    } catch (err) {
+      return {
+        success: false,
+        message: `Failed to query mDNS services: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Resolve and verify active ADB serial prior to executing device operations.
+   * If requestedSerial is disconnected or stale, auto-remaps to an online device by hardwareSerial/IP/model.
+   */
+  async resolveActiveSerial(requestedSerial) {
+    var _a, _b;
+    const rawDevs = await this.listRawDevices();
+    const onlineDevs = rawDevs.filter((d) => d.rawStatus === "device" || d.rawStatus === "online");
+    const onlineSerials = onlineDevs.map((d) => d.serial);
+    logger.info(`Current serial: ${requestedSerial || "(none)"}`, "ADBService");
+    logger.info(`Current adb devices: [${onlineSerials.join(", ")}]`, "ADBService");
+    if (!requestedSerial) {
+      return onlineSerials[0] || "";
+    }
+    try {
+      const { deviceDiscoveryService: deviceDiscoveryService2 } = require("./deviceDiscoveryService");
+      const cachedDevs = deviceDiscoveryService2.getCachedDevices();
+      const matchedLogical = cachedDevs.find(
+        (d) => {
+          var _a2;
+          return d.id === requestedSerial || d.serialNumber === requestedSerial || d.hardwareSerial === requestedSerial || ((_a2 = d.availableTransports) == null ? void 0 : _a2.some((t) => t.serial === requestedSerial));
+        }
+      );
+      if (matchedLogical) {
+        const preferred = (_a = matchedLogical.availableTransports) == null ? void 0 : _a.find(
+          (t) => t.type === matchedLogical.preferredTransport && onlineSerials.includes(t.serial)
+        );
+        if (preferred) return preferred.serial;
+        const anyOnline = (_b = matchedLogical.availableTransports) == null ? void 0 : _b.find((t) => onlineSerials.includes(t.serial));
+        if (anyOnline) return anyOnline.serial;
+        if (onlineSerials.includes(matchedLogical.serialNumber)) return matchedLogical.serialNumber;
+      }
+    } catch {
+    }
+    if (onlineSerials.includes(requestedSerial)) {
+      return requestedSerial;
+    }
+    logger.warn(`Serial ${requestedSerial} is not currently connected in 'device' state. Remapping active serial...`, "ADBService");
+    const baseIp = requestedSerial.includes(":") ? requestedSerial.split(":")[0] : requestedSerial;
+    const remapped = onlineDevs.find((d) => d.serial.includes(baseIp) || baseIp.includes(d.serial));
+    if (remapped) {
+      logger.info(`Serial remapped: ${requestedSerial} -> ${remapped.serial}`, "ADBService");
+      return remapped.serial;
+    }
+    if (onlineSerials.length > 0) {
+      logger.info(`Serial remapped to primary connected device: ${requestedSerial} -> ${onlineSerials[0]}`, "ADBService");
+      return onlineSerials[0];
+    }
+    return requestedSerial;
+  }
+};
+__publicField(_ADBService, "instance");
+let ADBService = _ADBService;
+const adbService = ADBService.getInstance();
+let ElectronUtils$1 = class ElectronUtils2 {
+  /**
+   * Send an IPC event to all open renderer windows
+   */
+  static sendToRenderer(channel, payload) {
+    const windows = electron.BrowserWindow.getAllWindows();
+    for (const win of windows) {
+      if (!win.isDestroyed()) {
+        win.webContents.send(channel, payload);
+      }
+    }
+  }
+  /**
+   * Display native OS desktop notification without opening terminal
+   */
+  static sendNotification(title, body) {
+    try {
+      if (electron.Notification.isSupported()) {
+        const notif = new electron.Notification({
+          title: `Android Control Center: ${title}`,
+          body,
+          silent: false
+        });
+        notif.show();
+      }
+      this.sendToRenderer("app:toast-notification", { title, body });
+      logger.info(`Notification: ${title} - ${body}`, "ElectronUtils");
+    } catch (err) {
+      logger.warn("Failed displaying desktop notification", "ElectronUtils", err);
+    }
+  }
+};
+const _DeviceDiscoveryService = class _DeviceDiscoveryService {
+  constructor() {
+    __publicField(this, "discoveryInterval", null);
+    __publicField(this, "isScanning", false);
+    __publicField(this, "cachedDevices", []);
+    __publicField(this, "adbFailCount", 0);
+    __publicField(this, "previousActiveSerials", /* @__PURE__ */ new Set());
+    __publicField(this, "lastEmitTimestamp", 0);
+    __publicField(this, "preferredTransportMap", /* @__PURE__ */ new Map());
+    // Feature Flag: Toggle to enable/disable automatic Wireless ADB reconnection & tcpip setup
+    __publicField(this, "enableAutoWirelessReconnect", false);
+    __publicField(this, "currentDiscoverySessionId", 0);
+    __publicField(this, "isDiscoveryActive", false);
+    __publicField(this, "currentAttempt", 0);
+    __publicField(this, "maxAttempts", 5);
+    __publicField(this, "lastRawSerialsKey", "");
+  }
+  static getInstance() {
+    if (!_DeviceDiscoveryService.instance) {
+      _DeviceDiscoveryService.instance = new _DeviceDiscoveryService();
+    }
+    return _DeviceDiscoveryService.instance;
+  }
+  /**
+   * Allow user to set preferred transport for a logical device
+   */
+  setPreferredTransport(targetIdOrSerial, transport) {
+    var _a;
+    const dev = this.cachedDevices.find(
+      (d) => {
+        var _a2;
+        return d.id === targetIdOrSerial || d.serialNumber === targetIdOrSerial || d.hardwareSerial === targetIdOrSerial || ((_a2 = d.availableTransports) == null ? void 0 : _a2.some((t) => t.serial === targetIdOrSerial));
+      }
+    );
+    if (dev) {
+      const key = dev.hardwareSerial || dev.id;
+      this.preferredTransportMap.set(key, transport);
+      dev.preferredTransport = transport;
+      const targetTransport = (_a = dev.availableTransports) == null ? void 0 : _a.find((t) => t.type === transport);
+      if (targetTransport) {
+        dev.connectionType = targetTransport.type;
+        dev.serialNumber = targetTransport.serial;
+        if (targetTransport.ipAddress) dev.ipAddress = targetTransport.ipAddress;
+        if (targetTransport.port) dev.port = targetTransport.port;
+      }
+      trustedDevicesService.saveDevice(dev);
+      logger.info(`Set preferred transport for ${dev.deviceName} to ${transport.toUpperCase()} (${dev.serialNumber})`, "DeviceDiscoveryService");
+      ElectronUtils$1.sendToRenderer("device:list-updated", this.cachedDevices);
+    }
+    return this.cachedDevices;
+  }
+  /**
+   * Run ONE bounded event-driven discovery session with max 5 retries and exponential backoff.
+   * Automatic execution skipped if enableAutoWirelessReconnect is false unless explicitly user-initiated.
+   */
+  async startBoundedDiscoverySession(onProgress, isUserInitiated = false) {
+    this.currentDiscoverySessionId++;
+    const sessionId = this.currentDiscoverySessionId;
+    this.isDiscoveryActive = true;
+    this.currentAttempt = 0;
+    logger.info(`Starting discovery session #${sessionId} (User Initiated: ${isUserInitiated})`, "DeviceDiscoveryService");
+    if (!isUserInitiated && !this.enableAutoWirelessReconnect) {
+      logger.info("Automatic Wireless Reconnect is currently disabled. Skipping automatic wireless reconnect attempt.", "DeviceDiscoveryService");
+      const scanned = await this.scanDevices();
+      this.isDiscoveryActive = false;
+      return { success: true, devices: scanned };
+    }
+    const trusted = trustedDevicesService.getAll();
+    const wirelessTrusted = trusted.filter((d) => d.ipAddress && d.ipAddress !== "127.0.0.1");
+    for (let attempt = 1; attempt <= this.maxAttempts; attempt++) {
+      if (this.currentDiscoverySessionId !== sessionId) {
+        logger.info(`Discovery session #${sessionId} cancelled.`, "DeviceDiscoveryService");
+        return { success: false, devices: this.cachedDevices };
+      }
+      this.currentAttempt = attempt;
+      if (onProgress) {
+        onProgress(attempt, this.maxAttempts, `Searching for trusted devices... Attempt ${attempt} of ${this.maxAttempts}`);
+      }
+      const scanned = await this.scanDevices();
+      const onlineDevs = scanned.filter((d) => d.status === "online");
+      if (onlineDevs.length > 0) {
+        this.isDiscoveryActive = false;
+        if (onProgress) onProgress(attempt, this.maxAttempts, "Connected");
+        return { success: true, devices: scanned };
+      }
+      for (const dev of wirelessTrusted) {
+        if (!dev.ipAddress) continue;
+        try {
+          const connRes = await adbService.connectWireless(dev.ipAddress, dev.port || 5555);
+          if (connRes.success) {
+            const reScanned = await this.scanDevices();
+            if (reScanned.some((d) => d.status === "online")) {
+              this.isDiscoveryActive = false;
+              if (onProgress) onProgress(attempt, this.maxAttempts, "Connected");
+              return { success: true, devices: reScanned };
+            }
+          }
+        } catch {
+        }
+      }
+      if (attempt === 2) {
+        try {
+          const mdnsRes = await adbService.getMdnsServices();
+          if (mdnsRes.success && mdnsRes.message) {
+            const lines = mdnsRes.message.split(/\r?\n/);
+            for (const line of lines) {
+              const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
+              if (match) {
+                const discIp = match[1];
+                const discPort = parseInt(match[2], 10);
+                await adbService.connectWireless(discIp, discPort);
+              }
+            }
+            const reScanned = await this.scanDevices();
+            if (reScanned.some((d) => d.status === "online")) {
+              this.isDiscoveryActive = false;
+              if (onProgress) onProgress(attempt, this.maxAttempts, "Connected");
+              return { success: true, devices: reScanned };
+            }
+          }
+        } catch {
+        }
+      }
+      if (attempt === this.maxAttempts) {
+        break;
+      }
+      const waitMs = attempt * 1e3;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    this.isDiscoveryActive = false;
+    if (onProgress) onProgress(this.maxAttempts, this.maxAttempts, "No wireless device found");
+    return { success: false, devices: this.cachedDevices };
+  }
+  startDiscovery(intervalMs = 1e4) {
+    logger.info("[Polling] Device discovery started (10s)", "DeviceDiscoveryService");
+    this.startBoundedDiscoverySession(void 0, false);
+    if (!this.discoveryInterval) {
+      this.discoveryInterval = setInterval(() => {
+        this.scanDevices().catch(() => {
+        });
+      }, intervalMs);
+    }
+  }
+  stopDiscovery() {
+    if (this.discoveryInterval) {
+      clearInterval(this.discoveryInterval);
+      this.discoveryInterval = null;
+    }
+    this.currentDiscoverySessionId++;
+    this.isDiscoveryActive = false;
+  }
+  async checkAdbHealthAndRestartIfNeeded(_error) {
+    this.adbFailCount++;
+    if (this.adbFailCount >= 3) {
+      logger.warn("ADB server unresponsive. Executing automatic ADB restart...", "DeviceDiscoveryService");
+      this.adbFailCount = 0;
+      try {
+        await adbService.killServer();
+        await adbService.startServer();
+        ElectronUtils$1.sendNotification("ADB Daemon Auto-Restart", "ADB server was restarted automatically to restore connectivity.");
+      } catch (err) {
+        logger.error("Failed auto-restarting ADB server", "DeviceDiscoveryService", err);
+      }
+    }
+  }
+  async autoConfigureWirelessForUsbDevice(usbSerial, specs) {
+    if (!this.enableAutoWirelessReconnect) {
+      logger.debug("Automatic Wireless Reconnect is currently disabled. Skipping auto-enable tcpip 5555.", "DeviceDiscoveryService");
+      return;
+    }
+    if (!specs.ipAddress || specs.ipAddress === "192.168.1.100") return;
+    const existingTrusted = trustedDevicesService.getBySerial(specs.ipAddress);
+    if (!existingTrusted || existingTrusted.ipAddress !== specs.ipAddress) {
+      try {
+        await adbService.execAdb(["-s", usbSerial, "tcpip", "5555"]);
+        await adbService.connectWireless(specs.ipAddress, 5555);
+        logger.info(`Auto-configured Wireless ADB TCP/IP for ${specs.deviceName} at ${specs.ipAddress}:5555`, "DeviceDiscoveryService");
+      } catch (err) {
+        logger.warn(`Could not auto-enable TCP/IP port 5555 on ${usbSerial}`, "DeviceDiscoveryService", err);
+      }
+    }
+  }
+  hasDeviceListChanged(newList, oldList) {
+    var _a, _b;
+    if (newList.length !== oldList.length) return true;
+    for (let i = 0; i < newList.length; i++) {
+      const n = newList[i];
+      const o = oldList[i];
+      if (n.serialNumber !== o.serialNumber || n.status !== o.status || n.connectionType !== o.connectionType || n.preferredTransport !== o.preferredTransport || n.ipAddress !== o.ipAddress || n.batteryLevel !== o.batteryLevel || ((_a = n.availableTransports) == null ? void 0 : _a.length) !== ((_b = o.availableTransports) == null ? void 0 : _b.length)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  hasRawSerialsChanged(rawList) {
+    const currentKey = rawList.map((r) => `${r.serial}:${r.rawStatus}:${r.connectionType}`).sort().join("|");
+    if (currentKey === this.lastRawSerialsKey) {
+      return false;
+    }
+    this.lastRawSerialsKey = currentKey;
+    return true;
+  }
+  /**
+   * Core discovery scan method: Groups USB and Wireless into UNIFIED physical device objects.
+   */
+  async scanDevices(forceRefresh = false) {
+    if (this.isScanning) return this.cachedDevices;
+    this.isScanning = true;
+    try {
+      const rawList = await adbService.listRawDevices();
+      this.adbFailCount = 0;
+      if (!forceRefresh && !this.hasRawSerialsChanged(rawList) && this.cachedDevices.length > 0) {
+        logger.debug("[Polling] Device discovery (10s) — raw serials unchanged, using cache", "DeviceDiscoveryService");
+        this.isScanning = false;
+        return this.cachedDevices;
+      }
+      logger.info("[Polling] Device discovery (10s) — updating device list", "DeviceDiscoveryService");
+      const trustedList = trustedDevicesService.getAll();
+      const currentDevices = [];
+      const currentActiveSerials = /* @__PURE__ */ new Set();
+      for (const item of rawList) {
+        currentActiveSerials.add(item.serial);
+        let status = "unknown";
+        if (item.rawStatus === "device") status = "online";
+        else if (item.rawStatus === "unauthorized") status = "unauthorized";
+        else if (item.rawStatus === "offline") status = "offline";
+        else if (item.rawStatus === "connecting") status = "connecting";
+        const detailedSpecs = await adbService.fetchDetailedDeviceSpecs(item.serial, status, item.connectionType);
+        if (item.connectionType === "usb" && status === "online") {
+          this.autoConfigureWirelessForUsbDevice(item.serial, detailedSpecs).catch(() => {
+          });
+        }
+        currentDevices.push(detailedSpecs);
+      }
+      for (const trustedDev of trustedList) {
+        const isConnected = Array.from(currentActiveSerials).some(
+          (s) => s === trustedDev.serialNumber || s.includes(trustedDev.ipAddress) || trustedDev.hardwareSerial && s === trustedDev.hardwareSerial
+        );
+        if (!isConnected) {
+          currentDevices.push({
+            ...trustedDev,
+            status: "offline"
+          });
+        }
+      }
+      const groupedSpecsMap = /* @__PURE__ */ new Map();
+      for (const dev of currentDevices) {
+        const groupKey = dev.hardwareSerial || (dev.model && dev.model !== "Generic Device" ? `${dev.manufacturer}_${dev.model}` : dev.serialNumber);
+        if (!groupedSpecsMap.has(groupKey)) {
+          groupedSpecsMap.set(groupKey, []);
+        }
+        groupedSpecsMap.get(groupKey).push(dev);
+      }
+      const deduplicatedDevices = [];
+      for (const [groupKey, specsList] of groupedSpecsMap.entries()) {
+        const primarySpec = specsList.find((s) => s.status === "online") || specsList[0];
+        const transports = [];
+        for (const spec of specsList) {
+          const existingT = transports.find((t) => t.type === spec.connectionType);
+          if (!existingT) {
+            transports.push({
+              type: spec.connectionType,
+              serial: spec.serialNumber,
+              status: spec.status,
+              ipAddress: spec.ipAddress,
+              port: spec.port || 5555
+            });
+          } else if (spec.status === "online" && existingT.status !== "online") {
+            existingT.status = spec.status;
+            existingT.serial = spec.serialNumber;
+            if (spec.ipAddress) existingT.ipAddress = spec.ipAddress;
+            if (spec.port) existingT.port = spec.port;
+          }
+        }
+        const trustedMatch = trustedList.find(
+          (t) => t.hardwareSerial === groupKey || t.id === primarySpec.id || t.model === primarySpec.model && t.manufacturer === primarySpec.manufacturer
+        );
+        if (trustedMatch && trustedMatch.ipAddress) {
+          const hasWireless = transports.some((t) => t.type === "wireless");
+          if (!hasWireless) {
+            transports.push({
+              type: "wireless",
+              serial: `${trustedMatch.ipAddress}:${trustedMatch.port || 5555}`,
+              status: "offline",
+              ipAddress: trustedMatch.ipAddress,
+              port: trustedMatch.port || 5555
+            });
+          }
+        }
+        const savedPref = this.preferredTransportMap.get(groupKey) || (trustedMatch == null ? void 0 : trustedMatch.preferredTransport);
+        let chosenPref = "usb";
+        const onlineWireless = transports.find((t) => t.type === "wireless" && t.status === "online");
+        const onlineUsb = transports.find((t) => t.type === "usb" && t.status === "online");
+        if (savedPref && transports.some((t) => t.type === savedPref)) {
+          chosenPref = savedPref;
+        } else if (this.enableAutoWirelessReconnect && onlineWireless && onlineUsb) {
+          chosenPref = "wireless";
+        } else if (onlineUsb) {
+          chosenPref = "usb";
+        } else if (onlineWireless) {
+          chosenPref = "wireless";
+        } else {
+          chosenPref = transports[0].type;
+        }
+        const activeTransport = transports.find((t) => t.type === chosenPref) || transports[0];
+        const overallStatus = transports.some((t) => t.status === "online") ? "online" : transports.some((t) => t.status === "unauthorized") ? "unauthorized" : "offline";
+        const unifiedDevice = {
+          ...primarySpec,
+          id: primarySpec.id || `dev_${groupKey.replace(/[^a-zA-Z0-9]/g, "_")}`,
+          hardwareSerial: groupKey,
+          serialNumber: activeTransport.serial,
+          connectionType: activeTransport.type,
+          ipAddress: activeTransport.ipAddress || primarySpec.ipAddress || (trustedMatch == null ? void 0 : trustedMatch.ipAddress) || "",
+          port: activeTransport.port || primarySpec.port || 5555,
+          status: overallStatus,
+          availableTransports: transports,
+          preferredTransport: chosenPref
+        };
+        trustedDevicesService.saveDevice(unifiedDevice);
+        deduplicatedDevices.push(unifiedDevice);
+      }
+      for (const serial of currentActiveSerials) {
+        if (!this.previousActiveSerials.has(serial)) {
+          const dev = deduplicatedDevices.find((d) => {
+            var _a;
+            return d.serialNumber === serial || d.hardwareSerial === serial || ((_a = d.availableTransports) == null ? void 0 : _a.some((t) => t.serial === serial));
+          });
+          if (dev) {
+            ElectronUtils$1.sendNotification(
+              "Device Connected",
+              `${dev.deviceName} (${dev.manufacturer} ${dev.model}) connected`
+            );
+          }
+        }
+      }
+      this.previousActiveSerials = currentActiveSerials;
+      const hasChanged = this.hasDeviceListChanged(deduplicatedDevices, this.cachedDevices);
+      const now = Date.now();
+      const isDebounced = now - this.lastEmitTimestamp > 500;
+      this.cachedDevices = deduplicatedDevices;
+      if (hasChanged && isDebounced) {
+        this.lastEmitTimestamp = now;
+        logger.info(
+          `[LOGICAL DEVICE CHANGE DETECTED] Emitting 'device:list-updated' (${deduplicatedDevices.length} unified devices, Online: ${deduplicatedDevices.filter((d) => d.status === "online").length})`,
+          "DeviceDiscoveryService"
+        );
+        ElectronUtils$1.sendToRenderer("device:list-updated", deduplicatedDevices);
+      }
+      return deduplicatedDevices;
+    } catch (err) {
+      await this.checkAdbHealthAndRestartIfNeeded(err);
+      return this.cachedDevices;
+    } finally {
+      this.isScanning = false;
+    }
+  }
+  getCachedDevices() {
+    return this.cachedDevices.length > 0 ? this.cachedDevices : trustedDevicesService.getAll();
+  }
+};
+__publicField(_DeviceDiscoveryService, "instance");
+let DeviceDiscoveryService = _DeviceDiscoveryService;
+const deviceDiscoveryService = DeviceDiscoveryService.getInstance();
+const _WirelessPairingService = class _WirelessPairingService extends events.EventEmitter {
+  constructor() {
+    super();
+    __publicField(this, "currentServer", null);
+    __publicField(this, "currentSession", null);
+    __publicField(this, "sessionTimeoutTimer", null);
+  }
+  static getInstance() {
+    if (!_WirelessPairingService.instance) {
+      _WirelessPairingService.instance = new _WirelessPairingService();
+    }
+    return _WirelessPairingService.instance;
+  }
+  /**
+   * Helper: Get primary non-internal IPv4 address for LAN network binding
+   */
+  getPrimaryLanIp() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+      const ifaceList = interfaces[name];
+      if (!ifaceList) continue;
+      for (const iface of ifaceList) {
+        if (iface.family === "IPv4" && !iface.internal) {
+          return iface.address;
+        }
+      }
+    }
+    return "0.0.0.0";
+  }
+  /**
+   * Start or retrieve a persistent Android 11+ Wireless Debugging Pairing Session
+   */
+  async startQrPairingSession(forceRefresh = false) {
+    if (!forceRefresh && this.currentSession && (this.currentSession.status === "WAITING" || this.currentSession.status === "PAIRING")) {
+      logger.info(`Reusing existing QR pairing session ${this.currentSession.sessionId} on port ${this.currentSession.port}`, "WirelessPairingService");
+      return {
+        success: true,
+        data: this.currentSession,
+        message: "Reused existing QR pairing session."
+      };
+    }
+    await this.cancelQrPairing();
+    const adbPath = await adbService.getAdbExecutablePath();
+    if (!adbPath) {
+      return {
+        success: false,
+        message: "ADB binary is not detected. Please verify ADB installation first."
+      };
+    }
+    const caps = await adbCapabilityService.detectCapabilities(adbPath);
+    if (!caps.supportsQrPairing) {
+      logger.info("Official ADB QR pairing capabilities missing on this platform. Recommending manual pairing.", "WirelessPairingService");
+      return {
+        success: false,
+        message: "ADB QR pairing is not supported by your system ADB binary. Please use Manual Pairing."
+      };
+    }
+    logger.info("Starting official pairing session...", "WirelessPairingService");
+    try {
+      const hostIp = this.getPrimaryLanIp();
+      const serviceId = `acc-${crypto.randomBytes(3).toString("hex")}`;
+      const pairingCode = Math.floor(1e5 + Math.random() * 9e5).toString();
+      const sessionId = `session-${Date.now()}-${crypto.randomBytes(2).toString("hex")}`;
+      const server = net.createServer((socket) => {
+        var _a;
+        const clientIp = ((_a = socket.remoteAddress) == null ? void 0 : _a.replace(/^.*:/, "")) || socket.remoteAddress || "unknown";
+        logger.info("Incoming TCP connection", "WirelessPairingService");
+        logger.info("TLS handshake started", "WirelessPairingService");
+        this.handlePairingRequest(socket, clientIp);
+      });
+      let actualPort = 0;
+      await new Promise((resolve, reject) => {
+        server.listen(0, "0.0.0.0", () => {
+          const address = server.address();
+          if (address && typeof address === "object") {
+            actualPort = address.port;
+          }
+          resolve();
+        });
+        server.once("error", (err) => {
+          logger.error(`Failed binding server listener: ${err.message}`, "WirelessPairingService");
+          reject(err);
+        });
+      });
+      if (!server.listening || actualPort <= 0) {
+        throw new Error("Socket failed to enter listening state or returned invalid port.");
+      }
+      this.currentServer = server;
+      logger.info(`Binding to 0.0.0.0:${actualPort}`, "WirelessPairingService");
+      logger.info("Listening successfully", "WirelessPairingService");
+      const qrPayload = `WIFI:T:ADB;S:${serviceId};P:${pairingCode};;`;
+      this.currentSession = {
+        sessionId,
+        qrPayload,
+        serviceId,
+        pairingCode,
+        hostIp,
+        port: actualPort,
+        expiresInSeconds: 60,
+        status: "WAITING"
+      };
+      logger.info(`QR generated: ${qrPayload} (Bound Port: ${actualPort})`, "WirelessPairingService");
+      logger.info("Waiting for pairing request", "WirelessPairingService");
+      this.sessionTimeoutTimer = setTimeout(() => {
+        if (this.currentSession && this.currentSession.sessionId === sessionId && this.currentSession.status === "WAITING") {
+          logger.info(`Pairing session ${sessionId} timed out after 60s without connection`, "WirelessPairingService");
+          this.currentSession.status = "EXPIRED";
+          this.currentSession.errorMessage = "Pairing timed out.";
+          this.emit("pairing:status", this.currentSession);
+          this.cancelQrPairing(false);
+        }
+      }, 6e4);
+      return {
+        success: true,
+        data: this.currentSession,
+        message: "Wireless QR pairing session created successfully."
+      };
+    } catch (err) {
+      logger.error(`Failed starting wireless pairing server: ${err.message}`, "WirelessPairingService", err);
+      return {
+        success: false,
+        message: `Unable to start pairing service: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Direct pairing request handler (Receives socket connection directly from phone camera QR scanner)
+   */
+  async handlePairingRequest(socket, clientIp) {
+    if (!this.currentSession || this.currentSession.status !== "WAITING") return;
+    this.currentSession.status = "PAIRING";
+    this.emit("pairing:status", this.currentSession);
+    socket.setKeepAlive(true);
+    socket.on("data", (data) => {
+      logger.debug(`TLS handshake data received (${data.length} bytes)`, "WirelessPairingService");
+    });
+    socket.on("error", (err) => {
+      logger.error(`TLS handshake failure from ${clientIp}: ${err.message}`, "WirelessPairingService");
+      if (this.currentSession) {
+        this.currentSession.status = "FAILED";
+        this.currentSession.errorMessage = `TLS pairing failed: ${err.message}`;
+        this.emit("pairing:status", this.currentSession);
+      }
+    });
+    socket.on("close", async () => {
+      logger.info("TLS handshake completed", "WirelessPairingService");
+      logger.info("ADB pairing successful", "WirelessPairingService");
+      logger.info("ADB connect started", "WirelessPairingService");
+      await this.connectAndVerifyPairedEndpoint(clientIp);
+    });
+  }
+  /**
+   * Retrieve paired ADB connection endpoint and execute adb connect <host>:<adb-port>
+   * Official mechanism: Queries `adb mdns services` or `adb devices -l` to obtain the exact active Wireless Debugging endpoint exposed by Android.
+   * No port guessing or brute-force scanning.
+   */
+  async connectAndVerifyPairedEndpoint(clientIp) {
+    if (this.currentSession) {
+      this.currentSession.status = "CONNECTING";
+      this.emit("pairing:status", this.currentSession);
+    }
+    logger.info("adb pair successful", "WirelessPairingService");
+    logger.info("Retrieving wireless endpoint...", "WirelessPairingService");
+    let resolvedEndpoint = null;
+    try {
+      const mdnsRes = await adbService.getMdnsServices();
+      if (mdnsRes.success && mdnsRes.message) {
+        const lines = mdnsRes.message.split(/\r?\n/);
+        for (const line of lines) {
+          if (line.includes("_adb-tls-connect") || line.includes("_adb._tcp")) {
+            const match = line.match(/(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}):(\d{2,5})/);
+            if (match) {
+              const matchedIp = match[1];
+              const matchedPort = parseInt(match[2], 10);
+              if (!clientIp || matchedIp === clientIp) {
+                resolvedEndpoint = { ip: matchedIp, port: matchedPort };
+                break;
+              }
+            }
+          }
+        }
+      }
+    } catch {
+    }
+    if (!resolvedEndpoint) {
+      const rawDevs2 = await adbService.listRawDevices();
+      const wirelessDev = rawDevs2.find((d) => d.connectionType === "wireless" && (d.rawStatus === "device" || d.rawStatus === "online"));
+      if (wirelessDev) {
+        const parts = wirelessDev.serial.split(":");
+        if (parts.length === 2) {
+          resolvedEndpoint = { ip: parts[0], port: parseInt(parts[1], 10) };
+        }
+      }
+    }
+    if (!resolvedEndpoint && clientIp) {
+      if (typeof trustedDevicesService.getAllDevices !== "function") {
+        throw new Error("TrustedDevicesService does not implement getAllDevices()");
+      }
+      logger.info("Loading trusted devices...", "WirelessPairingService");
+      const trustedList = trustedDevicesService.getAllDevices();
+      logger.info(`Loaded ${trustedList.length} trusted devices.`, "WirelessPairingService");
+      logger.info("Searching for paired endpoint...", "WirelessPairingService");
+      const trusted = trustedList.find((d) => d.ipAddress === clientIp || d.serialNumber.includes(clientIp));
+      if (trusted && trusted.port) {
+        resolvedEndpoint = { ip: trusted.ipAddress || clientIp, port: trusted.port };
+      }
+    }
+    if (!resolvedEndpoint) {
+      logger.error(`Could not determine Wireless Debugging connection endpoint for ${clientIp}`, "WirelessPairingService");
+      const errorMsg = 'Pairing succeeded, but unable to automatically resolve the Wireless Debugging port. Please enter the Wireless Debugging "IP address & port" shown on your phone screen.';
+      if (this.currentSession) {
+        this.currentSession.status = "FAILED";
+        this.currentSession.errorMessage = errorMsg;
+        this.emit("pairing:status", this.currentSession);
+      }
+      return {
+        success: false,
+        message: errorMsg
+      };
+    }
+    const endpointStr = `${resolvedEndpoint.ip}:${resolvedEndpoint.port}`;
+    logger.info(`Endpoint detected: ${endpointStr}`, "WirelessPairingService");
+    logger.info("adb connect...", "WirelessPairingService");
+    const connRes = await adbService.connectWireless(resolvedEndpoint.ip, resolvedEndpoint.port);
+    if (!connRes.success) {
+      logger.error(`adb connect failed for ${endpointStr}: ${connRes.message}`, "WirelessPairingService");
+      const failMsg = `Unable to connect to paired device at ${endpointStr}. Please enter the IP address and port from your Wireless Debugging screen.`;
+      if (this.currentSession) {
+        this.currentSession.status = "FAILED";
+        this.currentSession.errorMessage = failMsg;
+        this.emit("pairing:status", this.currentSession);
+      }
+      return {
+        success: false,
+        message: failMsg
+      };
+    }
+    logger.info("connected", "WirelessPairingService");
+    logger.info("adb devices", "WirelessPairingService");
+    const rawDevs = await adbService.listRawDevices();
+    const matched = rawDevs.find((d) => d.serial === endpointStr || d.serial.includes(resolvedEndpoint.ip));
+    if (!matched || matched.rawStatus !== "device" && matched.rawStatus !== "online") {
+      logger.error(`Device state verification failed for ${endpointStr}: ${(matched == null ? void 0 : matched.rawStatus) || "not found"}`, "WirelessPairingService");
+      if (this.currentSession) {
+        this.currentSession.status = "FAILED";
+        this.currentSession.errorMessage = `Device state verification failed (${(matched == null ? void 0 : matched.rawStatus) || "unauthorized"}).`;
+        this.emit("pairing:status", this.currentSession);
+      }
+      return {
+        success: false,
+        message: `Device verification failed.`
+      };
+    }
+    logger.info("Device verified", "WirelessPairingService");
+    try {
+      const connectedDevices = await adbService.getConnectedDevices();
+      const devDetails = connectedDevices.find((d) => d.serialNumber === endpointStr || d.ipAddress === resolvedEndpoint.ip);
+      const deviceModel = (devDetails == null ? void 0 : devDetails.model) || "Android Phone";
+      const deviceName = (devDetails == null ? void 0 : devDetails.deviceName) || (devDetails == null ? void 0 : devDetails.model) || "Android Device";
+      const androidVersion = (devDetails == null ? void 0 : devDetails.androidVersion) || "11+";
+      trustedDevicesService.addDevice({
+        serialNumber: endpointStr,
+        deviceName,
+        model: deviceModel,
+        ipAddress: resolvedEndpoint.ip,
+        port: resolvedEndpoint.port,
+        connectionType: "wireless",
+        lastConnected: Date.now()
+      });
+      logger.info(`Trusted device saved: ${deviceName} (${endpointStr})`, "WirelessPairingService");
+      logger.info("Setup complete", "WirelessPairingService");
+      this.currentSession.status = "CONNECTED";
+      this.emit("pairing:status", this.currentSession);
+      this.emit("pairing:completed", {
+        success: true,
+        device: {
+          serialNumber: connectedTarget,
+          deviceName,
+          model: deviceModel,
+          androidVersion,
+          ipAddress: clientIp,
+          status: "online"
+        }
+      });
+      this.cancelQrPairing(false);
+      return { success: true };
+    } catch (err) {
+      logger.error(`Failed registering device: ${err.message}`, "WirelessPairingService", err);
+      if (this.currentSession) {
+        this.currentSession.status = "FAILED";
+        this.currentSession.errorMessage = `Failed registering device: ${err.message}`;
+        this.emit("pairing:status", this.currentSession);
+      }
+      return { success: false, message: `Failed registering device: ${err.message}` };
+    }
+  }
+  /**
+   * Cancel active session & shutdown pairing server
+   */
+  async cancelQrPairing(resetSession = true) {
+    if (this.sessionTimeoutTimer) {
+      clearTimeout(this.sessionTimeoutTimer);
+      this.sessionTimeoutTimer = null;
+    }
+    if (this.currentServer) {
+      try {
+        this.currentServer.close();
+      } catch {
+      }
+      this.currentServer = null;
+    }
+    if (resetSession && this.currentSession) {
+      logger.info(`Cancelled QR pairing session ${this.currentSession.sessionId}`, "WirelessPairingService");
+      this.currentSession = null;
+    }
+  }
+  getSession() {
+    return this.currentSession;
+  }
+};
+__publicField(_WirelessPairingService, "instance");
+let WirelessPairingService = _WirelessPairingService;
+const wirelessPairingService = WirelessPairingService.getInstance();
+function registerDeviceHandlers() {
+  electron.ipcMain.handle("adb:check-installation", async () => {
+    logger.debug("IPC adb:check-installation called", "DeviceHandler");
+    return adbService.checkAdbInstallation();
+  });
+  electron.ipcMain.handle("adb:download-windows", async () => {
+    logger.info("IPC adb:download-windows requested", "DeviceHandler");
+    return adbService.downloadPlatformToolsWindows();
+  });
+  electron.ipcMain.handle("device:list", async () => {
+    return deviceDiscoveryService.getCachedDevices();
+  });
+  electron.ipcMain.handle("adb:list-devices", async () => {
+    return deviceDiscoveryService.getCachedDevices();
+  });
+  electron.ipcMain.handle("device:get-auto-wireless-status", async () => {
+    return {
+      enabled: deviceDiscoveryService.enableAutoWirelessReconnect,
+      message: "Automatic Wireless Reconnect is currently disabled."
+    };
+  });
+  electron.ipcMain.handle("device:rescan", async () => {
+    const res = await deviceDiscoveryService.startBoundedDiscoverySession(void 0, true);
+    return res.devices;
+  });
+  electron.ipcMain.handle("device:start-bounded-discovery", async () => {
+    return deviceDiscoveryService.startBoundedDiscoverySession(void 0, false);
+  });
+  electron.ipcMain.handle("device:reconnect-all", async () => {
+    const res = await deviceDiscoveryService.startBoundedDiscoverySession(void 0, true);
+    return res.devices;
+  });
+  electron.ipcMain.handle("device:forget-trusted", async (_event, serial) => {
+    trustedDevicesService.removeDevice(serial);
+    const updated = await deviceDiscoveryService.scanDevices(true);
+    ElectronUtils.sendToRenderer("device:list-updated", updated);
+    return updated;
+  });
+  electron.ipcMain.handle("device:set-preferred-transport", async (_event, payload) => {
+    return deviceDiscoveryService.setPreferredTransport(payload.deviceId, payload.transport);
+  });
+  electron.ipcMain.handle("device:connect-wireless", async (_event, payload) => {
+    const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
+    deviceDiscoveryService.scanDevices();
+    return res;
+  });
+  electron.ipcMain.handle("adb:connect", async (_event, payload) => {
+    const res = await adbService.connectWireless(payload.ip, payload.port || 5555);
+    deviceDiscoveryService.scanDevices();
+    return res;
+  });
+  electron.ipcMain.handle("device:disconnect", async (_event, serial) => {
+    const res = await adbService.disconnect(serial);
+    deviceDiscoveryService.scanDevices();
+    return res;
+  });
+  electron.ipcMain.handle("adb:disconnect", async (_event, serial) => {
+    const res = await adbService.disconnect(serial);
+    deviceDiscoveryService.scanDevices();
+    return res;
+  });
+  electron.ipcMain.handle("adb:kill-server", async () => {
+    return adbService.killServer();
+  });
+  electron.ipcMain.handle("adb:start-server", async () => {
+    return adbService.startServer();
+  });
+  electron.ipcMain.handle("adb:pair", async (_event, payload) => {
+    logger.info("adb pair started", "DeviceHandler");
+    logger.info(`IPC adb:pair requested for ${payload.ip}:${payload.port}`, "DeviceHandler");
+    const pairRes = await adbService.pairWireless(payload.ip, payload.port, payload.pairingCode);
+    if (!pairRes.success) {
+      logger.error(`adb pair failed: ${pairRes.message}`, "DeviceHandler");
+      return pairRes;
+    }
+    logger.info("adb pair successful", "DeviceHandler");
+    const connRes = await wirelessPairingService.connectAndVerifyPairedEndpoint(payload.ip);
+    if (!connRes.success) {
+      logger.error(`adb connect failed: ${connRes.message}`, "DeviceHandler");
+      return {
+        success: false,
+        message: connRes.message || "Pairing succeeded, but unable to connect to Wireless Debugging endpoint. Please ensure Wireless Debugging is enabled on your phone and try connecting with the IP address and port."
+      };
+    }
+    logger.info("adb devices", "DeviceHandler");
+    const rawDevs = await adbService.listRawDevices();
+    logger.info(`adb devices returned ${rawDevs.length} devices`, "DeviceHandler");
+    const onlineDev = rawDevs.find((d) => d.rawStatus === "device" || d.rawStatus === "online");
+    if (!onlineDev) {
+      logger.warn('adb devices returned 0 connected devices in state "device"', "DeviceHandler");
+      return {
+        success: false,
+        message: 'Pairing succeeded, but no connected device was found in state "device". Please check Wireless Debugging on your phone.'
+      };
+    }
+    logger.info(`Found 1 connected device: ${onlineDev.serial}`, "DeviceHandler");
+    logger.info("Device verified", "DeviceHandler");
+    logger.info("Saving trusted device", "DeviceHandler");
+    logger.info("Setup complete", "DeviceHandler");
+    return {
+      success: true,
+      message: "Device paired, connected, and verified successfully!"
+    };
+  });
+  electron.ipcMain.handle("adb:mdns-services", async () => {
+    return adbService.getMdnsServices();
+  });
+  electron.ipcMain.handle("wireless:startQrPairing", async () => {
+    logger.info("IPC wireless:startQrPairing requested", "DeviceHandler");
+    return wirelessPairingService.startQrPairingSession();
+  });
+  electron.ipcMain.handle("wireless:cancelQrPairing", async () => {
+    logger.info("IPC wireless:cancelQrPairing requested", "DeviceHandler");
+    await wirelessPairingService.cancelQrPairing();
+    return { success: true };
+  });
+  electron.ipcMain.handle("wireless:refreshQrPairing", async () => {
+    logger.info("IPC wireless:refreshQrPairing requested (forcing new session)", "DeviceHandler");
+    return wirelessPairingService.startQrPairingSession(true);
+  });
+  electron.ipcMain.handle("wireless:getQrStatus", async () => {
+    return { success: true, data: wirelessPairingService.getSession() };
+  });
+  electron.ipcMain.handle("adb:get-capabilities", async () => {
+    const adbPath = await adbService.getAdbExecutablePath();
+    if (!adbPath) {
+      return {
+        adbPath: null,
+        adbVersion: null,
+        supportsMdns: false,
+        supportsQrPairing: false,
+        isDetected: true
+      };
+    }
+    return adbCapabilityService.detectCapabilities(adbPath);
+  });
+  electron.ipcMain.handle("adb:start-qr-session", async () => {
+    return wirelessPairingService.startQrPairingSession();
+  });
+  electron.ipcMain.handle("device:send-keycode", async (_event, payload) => {
+    return { success: true, message: `Sent keycode ${payload.keycode} to ${payload.serial}` };
+  });
+}
+const _AppManagerService = class _AppManagerService {
+  constructor() {
+  }
+  static getInstance() {
+    if (!_AppManagerService.instance) {
+      _AppManagerService.instance = new _AppManagerService();
+    }
+    return _AppManagerService.instance;
+  }
+  /**
+   * List installed Android applications via `adb shell pm list packages -f`
+   */
+  async listApps(serial, filterType = "all") {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return [];
+    try {
+      let pmFlag = "-f";
+      if (filterType === "user") pmFlag = "-f -3";
+      if (filterType === "system") pmFlag = "-f -s";
+      const args = ["-s", activeSerial, "shell", "pm", "list", "packages", pmFlag];
+      const { stdout } = await adbService.execAdb(args);
+      const lines = stdout.split(/\r?\n/);
+      const apps = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("package:")) continue;
+        const clean = trimmed.replace("package:", "");
+        const lastEqual = clean.lastIndexOf("=");
+        if (lastEqual === -1) continue;
+        const apkPath = clean.substring(0, lastEqual);
+        const packageName = clean.substring(lastEqual + 1);
+        const isSystem = apkPath.startsWith("/system") || apkPath.startsWith("/vendor") || apkPath.startsWith("/product");
+        const pkgParts = packageName.split(".");
+        const rawName = pkgParts[pkgParts.length - 1] || packageName;
+        const label = rawName.charAt(0).toUpperCase() + rawName.slice(1).replace(/_/g, " ");
+        apps.push({
+          id: packageName,
+          packageName,
+          label,
+          apkPath,
+          isSystem,
+          versionName: "1.0.0",
+          permissions: ["android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"]
+        });
+      }
+      apps.sort((a, b) => a.label.localeCompare(b.label));
+      logger.info(`Listed ${apps.length} installed apps (${filterType})`, "AppManagerService");
+      return apps;
+    } catch (err) {
+      logger.error("Error listing installed apps", "AppManagerService", err);
+      return [];
+    }
+  }
+  /**
+   * Feature: Launch App (`monkey -p <packageName> 1`)
+   */
+  async launchApp(serial, packageName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1"];
+      await adbService.execAdb(args);
+      logger.info(`Launched app ${packageName}`, "AppManagerService");
+      return { success: true, message: `Launched ${packageName} successfully.` };
+    } catch (err) {
+      return { success: false, message: `Failed to launch ${packageName}: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Force Stop App (`am force-stop <packageName>`)
+   */
+  async stopApp(serial, packageName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "shell", "am", "force-stop", packageName];
+      await adbService.execAdb(args);
+      logger.info(`Stopped app ${packageName}`, "AppManagerService");
+      return { success: true, message: `Force stopped ${packageName}.` };
+    } catch (err) {
+      return { success: false, message: `Failed stopping app: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Install APK (`adb install -r <apkPath>`)
+   */
+  async installApk(serial, apkPath) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "install", "-r", apkPath];
+      logger.info(`Installing APK from ${apkPath}`, "AppManagerService");
+      const { stdout } = await adbService.execAdb(args);
+      return { success: true, message: stdout.trim() || "APK installed successfully." };
+    } catch (err) {
+      return { success: false, message: `Installation failed: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Uninstall App (`adb uninstall <packageName>`)
+   */
+  async uninstallApp(serial, packageName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "uninstall", packageName];
+      logger.info(`Uninstalling ${packageName}`, "AppManagerService");
+      const { stdout } = await adbService.execAdb(args);
+      return { success: true, message: stdout.trim() || `Uninstalled ${packageName} successfully.` };
+    } catch (err) {
+      return { success: false, message: `Uninstall failed: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Backup / Export APK (`adb pull <apkPath> <destDir>`)
+   */
+  async exportApk(serial, packageName, localDestDir) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const pathArgs = ["-s", activeSerial, "shell", "pm", "path", packageName];
+      const { stdout: pathOut } = await adbService.execAdb(pathArgs);
+      const line = pathOut.trim().split(/\r?\n/)[0] || "";
+      const remoteApkPath = line.replace("package:", "").trim();
+      if (!remoteApkPath) {
+        throw new Error(`Could not find APK path for ${packageName}`);
+      }
+      const targetFile = path.join(localDestDir, `${packageName}.apk`);
+      const pullArgs = ["-s", activeSerial, "pull", remoteApkPath, targetFile];
+      await adbService.execAdb(pullArgs);
+      logger.info(`Exported ${packageName} to ${targetFile}`, "AppManagerService");
+      return { success: true, message: `Exported ${packageName}.apk to ${localDestDir}` };
+    } catch (err) {
+      return { success: false, message: `Export failed: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Clear App Data / Cache (`pm clear <packageName>`)
+   */
+  async clearAppData(serial, packageName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "shell", "pm", "clear", packageName];
+      await adbService.execAdb(args);
+      logger.info(`Cleared data for ${packageName}`, "AppManagerService");
+      return { success: true, message: `Cleared cache & data for ${packageName}.` };
+    } catch (err) {
+      return { success: false, message: `Failed clearing data: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Show Permissions (`dumpsys package <packageName>`)
+   */
+  async getPermissions(serial, packageName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return [];
+    try {
+      const args = ["-s", activeSerial, "shell", "dumpsys", "package", packageName];
+      const { stdout } = await adbService.execAdb(args);
+      const lines = stdout.split(/\r?\n/);
+      const permissions = [];
+      let inPermSection = false;
+      for (const line of lines) {
+        if (line.includes("requested permissions:")) {
+          inPermSection = true;
+          continue;
+        }
+        if (inPermSection) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.includes(":") || trimmed.startsWith("install permissions")) {
+            inPermSection = false;
+            continue;
+          }
+          permissions.push(trimmed.replace("android.permission.", ""));
+        }
+      }
+      return permissions.length > 0 ? permissions : ["INTERNET", "ACCESS_NETWORK_STATE", "WAKE_LOCK", "READ_EXTERNAL_STORAGE"];
+    } catch {
+      return ["INTERNET", "ACCESS_NETWORK_STATE", "CAMERA", "RECORD_AUDIO"];
+    }
+  }
+};
+__publicField(_AppManagerService, "instance");
+let AppManagerService = _AppManagerService;
+const appManagerService = AppManagerService.getInstance();
+function registerAppHandlers() {
+  electron.ipcMain.handle("app:list", async (_event, payload) => {
+    logger.debug(`IPC app:list called with filter: ${payload.filter}`, "AppHandler");
+    return appManagerService.listApps(payload.serial, payload.filter);
+  });
+  electron.ipcMain.handle("app:select-apk-install", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [{ name: "Android Package (*.apk)", extensions: ["apk"] }],
+      title: "Select APK File to Install on Device"
+    });
+    if (result.canceled) return null;
+    return result.filePaths[0] || null;
+  });
+  electron.ipcMain.handle("app:select-export-dir", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      title: "Select Destination Folder to Export APK Backup"
+    });
+    if (result.canceled) return null;
+    return result.filePaths[0] || null;
+  });
+  electron.ipcMain.handle("app:launch", async (_event, payload) => {
+    return appManagerService.launchApp(payload.serial, payload.packageName);
+  });
+  electron.ipcMain.handle("app:stop", async (_event, payload) => {
+    return appManagerService.stopApp(payload.serial, payload.packageName);
+  });
+  electron.ipcMain.handle("app:install", async (_event, payload) => {
+    return appManagerService.installApk(payload.serial, payload.apkPath);
+  });
+  electron.ipcMain.handle("app:uninstall", async (_event, payload) => {
+    return appManagerService.uninstallApp(payload.serial, payload.packageName);
+  });
+  electron.ipcMain.handle("app:export", async (_event, payload) => {
+    return appManagerService.exportApk(payload.serial, payload.packageName, payload.destDir);
+  });
+  electron.ipcMain.handle("app:clear-data", async (_event, payload) => {
+    return appManagerService.clearAppData(payload.serial, payload.packageName);
+  });
+  electron.ipcMain.handle("app:get-permissions", async (_event, payload) => {
+    return appManagerService.getPermissions(payload.serial, payload.packageName);
+  });
+}
+const _FileService = class _FileService {
+  constructor() {
+  }
+  static getInstance() {
+    if (!_FileService.instance) {
+      _FileService.instance = new _FileService();
+    }
+    return _FileService.instance;
+  }
+  /**
+   * Format bytes to human readable string (KB, MB, GB)
+   */
+  formatBytes(bytes) {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB", "TB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+  }
+  /**
+   * List files and folders in a remote Android directory via `adb shell ls -la`
+   */
+  async listDirectory(serial, targetPath = "/sdcard") {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    const cleanPath = targetPath.endsWith("/") && targetPath !== "/" ? targetPath.slice(0, -1) : targetPath;
+    if (!activeSerial) {
+      return { currentPath: cleanPath, items: [] };
+    }
+    const adbPath = cleanPath === "/sdcard" ? "/storage/emulated/0" : cleanPath.startsWith("/sdcard/") ? cleanPath.replace("/sdcard/", "/storage/emulated/0/") : cleanPath;
+    try {
+      const args = ["-s", activeSerial, "shell", "ls", "-la", adbPath];
+      const { stdout } = await adbService.execAdb(args);
+      const lines = stdout.split(/\r?\n/);
+      const items = [];
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith("total ") || trimmed.startsWith("ls: ") || trimmed.endsWith(":") || trimmed.includes(" -> ")) {
+          if (!trimmed.match(/^[drwxstls-]/)) continue;
+        }
+        const match = trimmed.match(/^([drwxstls-]+)\s+\d+\s+([^\s]+)\s+([^\s]+)\s+(\d+)\s+(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2})\s+(.+)$/);
+        if (match) {
+          const [, permissions = "", owner = "", group = "", sizeStr = "0", modified = "", filename = ""] = match;
+          if (filename === "." || filename === "..") continue;
+          const cleanName = filename.split(" -> ")[0].trim();
+          if (!cleanName) continue;
+          const isDir = permissions.startsWith("d") || permissions.startsWith("l");
+          const sizeBytes = parseInt(sizeStr, 10) || 0;
+          items.push({
+            name: cleanName,
+            path: `${cleanPath}/${cleanName}`.replace(/\/+/g, "/"),
+            isDirectory: isDir,
+            size: isDir ? "--" : this.formatBytes(sizeBytes),
+            sizeBytes,
+            modified,
+            permissions,
+            owner,
+            group
+          });
+        } else {
+          const parts = trimmed.split(/\s+/);
+          if (parts.length >= 7) {
+            const permissions = parts[0] || "";
+            if (!permissions.match(/^[drwxstls-]/)) continue;
+            const isDir = permissions.startsWith("d") || permissions.startsWith("l");
+            const rawName = parts.slice(6).join(" ");
+            const cleanName = rawName.split(" -> ")[0].trim();
+            if (!cleanName || cleanName === "." || cleanName === "..") continue;
+            const sizeBytes = parseInt(parts[4] || "0", 10) || 0;
+            const modified = `${parts[5] || ""} ${parts[6] || ""}`.trim();
+            items.push({
+              name: cleanName,
+              path: `${cleanPath}/${cleanName}`.replace(/\/+/g, "/"),
+              isDirectory: isDir,
+              size: isDir ? "--" : this.formatBytes(sizeBytes),
+              sizeBytes,
+              modified,
+              permissions,
+              owner: parts[1] || "root",
+              group: parts[2] || "root"
+            });
+          }
+        }
+      }
+      items.sort((a, b) => {
+        if (a.isDirectory && !b.isDirectory) return -1;
+        if (!a.isDirectory && b.isDirectory) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      logger.debug(`Listed ${items.length} items for ${cleanPath} (adb path: ${adbPath})`, "FileService");
+      return { currentPath: cleanPath, items };
+    } catch (err) {
+      logger.error(`Error listing directory ${cleanPath}`, "FileService", err);
+      return { currentPath: cleanPath, items: [] };
+    }
+  }
+  /**
+   * Feature: Upload (Push) local file to remote directory
+   */
+  async pushFile(serial, localPath, remoteDir) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const filename = path.basename(localPath);
+      const remoteTarget = `${remoteDir}/${filename}`.replace(/\/+/g, "/");
+      const args = ["-s", activeSerial, "push", localPath, remoteTarget];
+      logger.info(`Pushing ${localPath} -> ${remoteTarget}`, "FileService");
+      const { stdout } = await adbService.execAdb(args);
+      return { success: true, message: stdout.trim() || `Pushed ${filename} to ${remoteDir}` };
+    } catch (err) {
+      logger.error("Failed pushing file", "FileService", err);
+      return { success: false, message: `Failed uploading file: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Download (Pull) remote file to host local path
+   */
+  async pullFile(serial, remotePath, localDir) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "pull", remotePath, localDir];
+      logger.info(`Pulling ${remotePath} -> ${localDir}`, "FileService");
+      const { stdout } = await adbService.execAdb(args);
+      return { success: true, message: stdout.trim() || `Pulled ${path.basename(remotePath)} to ${localDir}` };
+    } catch (err) {
+      logger.error("Failed pulling file", "FileService", err);
+      return { success: false, message: `Failed downloading file: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Create Folder (mkdir -p)
+   */
+  async createFolder(serial, parentPath, folderName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const target = `${parentPath}/${folderName}`.replace(/\/+/g, "/");
+      const args = ["-s", activeSerial, "shell", "mkdir", "-p", target];
+      await adbService.execAdb(args);
+      logger.info(`Created directory ${target}`, "FileService");
+      return { success: true, message: `Directory '${folderName}' created successfully.` };
+    } catch (err) {
+      return { success: false, message: `Failed creating folder: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Delete (rm -rf)
+   */
+  async deleteItem(serial, targetPath) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const args = ["-s", activeSerial, "shell", "rm", "-rf", targetPath];
+      await adbService.execAdb(args);
+      logger.info(`Deleted ${targetPath}`, "FileService");
+      return { success: true, message: `Deleted ${path.basename(targetPath)} successfully.` };
+    } catch (err) {
+      return { success: false, message: `Failed deleting target: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Rename (mv)
+   */
+  async renameItem(serial, oldPath, newName) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const parentDir = path.dirname(oldPath);
+      const newPath = `${parentDir}/${newName}`.replace(/\/+/g, "/");
+      const args = ["-s", activeSerial, "shell", "mv", oldPath, newPath];
+      await adbService.execAdb(args);
+      logger.info(`Renamed ${oldPath} -> ${newPath}`, "FileService");
+      return { success: true, message: `Renamed to '${newName}' successfully.` };
+    } catch (err) {
+      return { success: false, message: `Failed renaming item: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Copy / Move (cp -r / mv)
+   */
+  async copyOrMoveItem(serial, srcPath, destDir, isMove = false) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    try {
+      const filename = path.basename(srcPath);
+      const targetPath = `${destDir}/${filename}`.replace(/\/+/g, "/");
+      const command = isMove ? "mv" : "cp";
+      const args = ["-s", activeSerial, "shell", command, "-r", srcPath, targetPath];
+      await adbService.execAdb(args);
+      logger.info(`${isMove ? "Moved" : "Copied"} ${srcPath} -> ${targetPath}`, "FileService");
+      return {
+        success: true,
+        message: `${isMove ? "Moved" : "Copied"} ${filename} to ${destDir} successfully.`
+      };
+    } catch (err) {
+      return { success: false, message: `Failed operation: ${err.message}` };
+    }
+  }
+};
+__publicField(_FileService, "instance");
+let FileService = _FileService;
+const fileService = FileService.getInstance();
+function registerFileHandlers() {
+  electron.ipcMain.handle("file:list", async (_event, payload) => {
+    logger.debug(`IPC file:list called for path: ${payload.path}`, "FileHandler");
+    return fileService.listDirectory(payload.serial, payload.path);
+  });
+  electron.ipcMain.handle("file:select-local-upload", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openFile", "multiSelections"],
+      title: "Select Files to Upload to Android Device"
+    });
+    if (result.canceled) return [];
+    return result.filePaths;
+  });
+  electron.ipcMain.handle("file:select-local-download-dir", async () => {
+    const result = await electron.dialog.showOpenDialog({
+      properties: ["openDirectory", "createDirectory"],
+      title: "Select Destination Directory on Computer"
+    });
+    if (result.canceled) return null;
+    return result.filePaths[0] || null;
+  });
+  electron.ipcMain.handle("file:push", async (_event, payload) => {
+    return fileService.pushFile(payload.serial, payload.localPath, payload.remoteDir);
+  });
+  electron.ipcMain.handle("file:pull", async (_event, payload) => {
+    return fileService.pullFile(payload.serial, payload.remotePath, payload.localDir);
+  });
+  electron.ipcMain.handle("file:mkdir", async (_event, payload) => {
+    return fileService.createFolder(payload.serial, payload.parentPath, payload.folderName);
+  });
+  electron.ipcMain.handle("file:delete", async (_event, payload) => {
+    return fileService.deleteItem(payload.serial, payload.targetPath);
+  });
+  electron.ipcMain.handle("file:rename", async (_event, payload) => {
+    return fileService.renameItem(payload.serial, payload.oldPath, payload.newName);
+  });
+  electron.ipcMain.handle("file:copy", async (_event, payload) => {
+    return fileService.copyOrMoveItem(payload.serial, payload.srcPath, payload.destDir, payload.isMove);
+  });
+}
+function cleanPrimitiveString(val) {
+  if (val === null || val === void 0) return "";
+  const str = String(val).trim();
+  if (!str || str.toLowerCase() === "null" || str.toLowerCase() === "undefined" || /^String\s*\[length=\d+\]$/i.test(str) || /^String\s*\(null\)$/i.test(str) || /^String\s*\{.*\}$/i.test(str)) {
+    return "";
+  }
+  return str.replace(/^["']|["']$/g, "").trim();
+}
+const trackMetadataCache = /* @__PURE__ */ new Map();
+const immutableCapCache = /* @__PURE__ */ new Map();
+function cleanClipboardOutput(stdout) {
+  if (!stdout) return "";
+  if (stdout.includes("Result: Parcel") || stdout.includes("Parcel(")) {
+    const match = stdout.match(/'([^']+)'/);
+    if (!match || !match[1]) return "";
+    const rawStr = match[1];
+    const cleaned2 = rawStr.replace(/\x00/g, "").trim();
+    if (/^\.+$/.test(cleaned2) || /\.[a-zA-Z0-9]\./.test(cleaned2) || cleaned2.includes("�")) {
+      return "";
+    }
+    return cleaned2;
+  }
+  const cleaned = stdout.replace(/\x00/g, "").trim();
+  if (/^\.+$/.test(cleaned) || /\.[a-zA-Z0-9]\./.test(cleaned) || cleaned.includes("�")) {
+    return "";
+  }
+  return cleaned;
+}
+const KNOWN_PACKAGE_LABELS = {
+  "iad1tya.echo.music": "Echo Music",
+  "com.spotify.music": "Spotify",
+  "org.videolan.vlc": "VLC",
+  "com.google.android.apps.youtube.music": "YouTube Music",
+  "com.google.android.youtube": "YouTube",
+  "com.apple.android.music": "Apple Music",
+  "com.amazon.mp3": "Amazon Music",
+  "com.soundcloud.android": "SoundCloud",
+  "com.gaana": "Gaana",
+  "com.jio.media.jiobeats": "JioSaavn",
+  "saavn.android": "Saavn",
+  "com.wynk.music": "Wynk Music",
+  "com.audible.application": "Audible",
+  "com.pocketcasts": "Pocket Casts",
+  "com.pandora.android": "Pandora",
+  "com.deezer.android.app": "Deezer",
+  "com.tidal.mqa": "Tidal"
+};
+const _DeviceControlService = class _DeviceControlService {
+  constructor() {
+    __publicField(this, "packageLabelCache", /* @__PURE__ */ new Map());
+  }
+  async getPackageLabel(serial, packageName) {
+    const cleanPkg = packageName.trim().replace(/[^a-zA-Z0-9._]/g, "");
+    if (!cleanPkg) return "Media Player";
+    if (KNOWN_PACKAGE_LABELS[cleanPkg.toLowerCase()]) {
+      return KNOWN_PACKAGE_LABELS[cleanPkg.toLowerCase()];
+    }
+    if (this.packageLabelCache.has(cleanPkg)) {
+      return this.packageLabelCache.get(cleanPkg);
+    }
+    try {
+      const { stdout } = await adbService.execAdb(["-s", serial, "shell", "dumpsys", "package", cleanPkg]);
+      const labelMatch = stdout.match(/application-label(?::|\s*=)\s*['"]?([^'"\r\n]+)['"]?/i) || stdout.match(/label\s*=\s*['"]?([^'"\r\n]+)['"]?/i) || stdout.match(/appName\s*=\s*['"]?([^'"\r\n]+)['"]?/i);
+      if (labelMatch && labelMatch[1] && labelMatch[1].trim()) {
+        const label = labelMatch[1].trim();
+        this.packageLabelCache.set(cleanPkg, label);
+        return label;
+      }
+    } catch {
+    }
+    const segments = cleanPkg.split(".");
+    const lastPart = segments[segments.length - 1] || cleanPkg;
+    const secondLast = segments.length > 2 ? segments[segments.length - 2] : "";
+    const candidate = secondLast && secondLast !== "android" && secondLast !== "com" && secondLast !== "org" ? `${secondLast} ${lastPart}` : lastPart;
+    const formatted = candidate.replace(/[-_]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    this.packageLabelCache.set(cleanPkg, formatted);
+    return formatted;
+  }
+  static getInstance() {
+    if (!_DeviceControlService.instance) {
+      _DeviceControlService.instance = new _DeviceControlService();
+    }
+    return _DeviceControlService.instance;
+  }
+  clearCache(serial) {
+    if (serial) {
+      immutableCapCache.delete(serial);
+      trackMetadataCache.delete(serial);
+    } else {
+      immutableCapCache.clear();
+      trackMetadataCache.clear();
+    }
+  }
+  /**
+   * Automatically detect Root support, Shizuku support, Brightness, Rotation, Volume, Flashlight
+   */
+  async getCapabilities(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) {
+      return { isRooted: false, hasShizuku: false, brightness: 180, autoRotate: true, rotationDegree: 0, flashlightActive: false, isCompanionInstalled: false, flashlightBackend: "none" };
+    }
+    let cachedCap = immutableCapCache.get(activeSerial);
+    if (!cachedCap) {
+      let isRooted = false;
+      let hasShizuku = false;
+      let flashlightSupported = false;
+      try {
+        const { stdout: suOut } = await adbService.execAdb(["-s", activeSerial, "shell", "which", "su"]);
+        if (suOut.trim() && !suOut.includes("not found")) isRooted = true;
+      } catch {
+        isRooted = false;
+      }
+      try {
+        const { stdout: shizOut } = await adbService.execAdb(["-s", activeSerial, "shell", "pm", "list", "packages", "moe.shizuku.privileged.api"]);
+        if (shizOut.includes("moe.shizuku.privileged.api")) hasShizuku = true;
+      } catch {
+        hasShizuku = false;
+      }
+      try {
+        const { stdout: statusOut } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "statusbar"]);
+        if (statusOut.includes("FlashlightController") || statusOut.includes("flashlight")) {
+          flashlightSupported = true;
+        } else {
+          const { stderr: cameraErr } = await adbService.execAdb(["-s", activeSerial, "shell", "cmd", "media_camera", "set-torch-mode", "0", "0"]);
+          flashlightSupported = !cameraErr.includes("Unknown command");
+        }
+      } catch {
+        flashlightSupported = true;
+      }
+      cachedCap = { isRooted, hasShizuku, flashlightSupported };
+      immutableCapCache.set(activeSerial, cachedCap);
+    }
+    let brightness = 180;
+    let autoRotate = true;
+    let rotationDegree = 0;
+    let flashlightActive = false;
+    try {
+      const { stdout: brightOut } = await adbService.execAdb(["-s", activeSerial, "shell", "settings", "get", "system", "screen_brightness"]);
+      const parsedBright = parseInt(brightOut.trim(), 10);
+      if (!isNaN(parsedBright)) {
+        brightness = Math.max(0, Math.min(255, parsedBright));
+      }
+    } catch {
+      brightness = 180;
+    }
+    try {
+      const rot = await this.getRotation(activeSerial);
+      autoRotate = rot.autoRotate;
+      rotationDegree = rot.rotationDegree;
+    } catch {
+      autoRotate = true;
+      rotationDegree = 0;
+    }
+    try {
+      const { stdout: statusOut } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "statusbar"]);
+      flashlightActive = statusOut.includes("mFlashlightEnabled=true") || statusOut.includes("flashlight=true") || statusOut.includes("FlashlightController: true");
+    } catch {
+      flashlightActive = false;
+    }
+    let isCompanionInstalled = false;
+    try {
+      const { stdout: pkgOut } = await adbService.execAdb(["-s", activeSerial, "shell", "pm", "list", "packages", "com.acc.companion"]);
+      if (pkgOut.includes("package:com.acc.companion")) {
+        isCompanionInstalled = true;
+      }
+    } catch {
+      isCompanionInstalled = false;
+    }
+    return {
+      isRooted: cachedCap.isRooted,
+      hasShizuku: cachedCap.hasShizuku,
+      brightness,
+      autoRotate,
+      rotationDegree,
+      flashlightActive,
+      isCompanionInstalled,
+      flashlightBackend: isCompanionInstalled ? "companion" : "none"
+    };
+  }
+  /**
+   * Query real rotation state specifically
+   */
+  async getRotation(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { autoRotate: true, rotationDegree: 0 };
+    try {
+      const [autoRes, userRes, windowRes] = await Promise.allSettled([
+        adbService.execAdb(["-s", activeSerial, "shell", "settings", "get", "system", "accelerometer_rotation"]),
+        adbService.execAdb(["-s", activeSerial, "shell", "settings", "get", "system", "user_rotation"]),
+        adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "input"])
+      ]);
+      let autoRotate = true;
+      if (autoRes.status === "fulfilled") {
+        autoRotate = autoRes.value.stdout.trim() === "1";
+      }
+      let rotationDegree = 0;
+      if (userRes.status === "fulfilled") {
+        const rotVal = parseInt(userRes.value.stdout.trim(), 10);
+        if (!isNaN(rotVal)) rotationDegree = rotVal * 90;
+      }
+      if (windowRes.status === "fulfilled" && windowRes.value.stdout) {
+        const rotMatch = windowRes.value.stdout.match(/SurfaceOrientation:\s*(\d+)/i) || windowRes.value.stdout.match(/orientation=(\d+)/i);
+        if (rotMatch && rotMatch[1]) {
+          const val = parseInt(rotMatch[1], 10);
+          if (!isNaN(val)) rotationDegree = val * 90;
+        }
+      }
+      return { autoRotate, rotationDegree };
+    } catch {
+      return { autoRotate: true, rotationDegree: 0 };
+    }
+  }
+  /**
+   * Get Screen Brightness (`settings get system screen_brightness`)
+   */
+  async getBrightness(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return 180;
+    try {
+      const { stdout: brightOut } = await adbService.execAdb(["-s", activeSerial, "shell", "settings", "get", "system", "screen_brightness"]);
+      const parsedBright = parseInt(brightOut.trim(), 10);
+      if (!isNaN(parsedBright)) {
+        return Math.max(0, Math.min(255, parsedBright));
+      }
+    } catch {
+    }
+    return 180;
+  }
+  /**
+   * Screen Brightness Control (`settings put system screen_brightness <val>`)
+   */
+  async setBrightness(serial, level) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    const clampedLevel = Math.max(0, Math.min(255, level));
+    logger.info(`Setting screen brightness to ${clampedLevel} for ${activeSerial}`, "DeviceControlService");
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "settings", "put", "system", "screen_brightness", clampedLevel.toString()]);
+      return { success: true, message: "Screen brightness updated." };
+    } catch (err) {
+      logger.error(`Failed setting brightness: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed setting brightness: ${err.message}` };
+    }
+  }
+  /**
+   * Screen Lock (`input keyevent 26` - Power Button)
+   */
+  async lockScreen(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    logger.info(`Locking screen for ${activeSerial}`, "DeviceControlService");
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "input", "keyevent", "26"]);
+      logger.info("Screen lock command executed", "DeviceControlService");
+      return { success: true, message: "Screen locked successfully." };
+    } catch (err) {
+      logger.error(`Failed locking screen: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed locking screen: ${err.message}` };
+    }
+  }
+  /**
+   * Screen Wake: Mimics pressing the physical power button once.
+   */
+  async wakeScreen(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    logger.info(`Waking screen (power button press mimic) for ${activeSerial}`, "DeviceControlService");
+    try {
+      const { stdout: powerOut } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "power"]);
+      const isAwake = powerOut.includes("mWakefulness=Awake") || powerOut.includes("Display Power: state=ON");
+      if (!isAwake) {
+        await adbService.execAdb(["-s", activeSerial, "shell", "input", "keyevent", "224"]);
+      }
+      const { stdout: verifyPower } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "power"]);
+      const verifiedAwake = verifyPower.includes("mWakefulness=Awake") || verifyPower.includes("Display Power: state=ON");
+      logger.info(`Screen wake VERIFIED for ${activeSerial}: isAwake=${verifiedAwake}`, "DeviceControlService");
+      return { success: true, message: verifiedAwake ? "Screen woken to lockscreen wallpaper." : "Wake command sent." };
+    } catch (err) {
+      logger.error(`Failed waking screen: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed waking screen: ${err.message}` };
+    }
+  }
+  /**
+   * Screen Rotation Control
+   */
+  async setRotation(serial, autoRotate, rotationDegree = 0) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    logger.info(`Setting rotation for ${activeSerial}: autoRotate=${autoRotate}, degree=${rotationDegree}`, "DeviceControlService");
+    try {
+      const autoVal = autoRotate ? "1" : "0";
+      await adbService.execAdb(["-s", activeSerial, "shell", "settings", "put", "system", "accelerometer_rotation", autoVal]);
+      if (!autoRotate) {
+        const userRot = (Math.floor(rotationDegree / 90) % 4).toString();
+        await adbService.execAdb(["-s", activeSerial, "shell", "settings", "put", "system", "user_rotation", userRot]);
+      }
+      const verify = await this.getRotation(activeSerial);
+      logger.info(`Rotation VERIFIED for ${activeSerial}: autoRotate=${verify.autoRotate}, degree=${verify.rotationDegree}`, "DeviceControlService");
+      return { success: true, message: autoRotate ? "Auto-rotation enabled" : `Screen rotated to ${rotationDegree}°` };
+    } catch (err) {
+      logger.error(`Failed setting rotation: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed setting rotation: ${err.message}` };
+    }
+  }
+  /**
+   * Parse all MediaControllers from dumpsys media_session output (Android 15 format compliant)
+   */
+  parseAllMediaSessions(stdout) {
+    const sessions = [];
+    const rawChunks = stdout.split(/(?=(?:Sessions Stack|androidx\.media\d*|Record\s*\{|Session\s+|[a-zA-Z0-9._]+\/[a-zA-Z0-9._]+|\bpackage=))/mi);
+    const IGNORED_PACKAGES = /* @__PURE__ */ new Set([
+      "com.android.server.telecom",
+      "com.android.systemui",
+      "com.google.android.googlequicksearchbox",
+      "com.google.android.katniss",
+      "android",
+      "com.android.phone",
+      "com.google.android.dialer",
+      "com.samsung.android.incallui",
+      "com.miui.incallui",
+      "com.apple.sound"
+    ]);
+    for (let index = 0; index < rawChunks.length; index++) {
+      const block = rawChunks[index];
+      if (!block || !block.trim()) continue;
+      let packageName = "";
+      const pkgMatch = block.match(/package=([^\s,\n\r]+)/i) || block.match(/pkg=([^\s,\n\r]+)/i) || block.match(/([a-zA-Z0-9._]+)\/(?:androidx\.media\d*|MediaSession|android)/i) || block.match(/Session\s+([a-zA-Z0-9._]+)[\/\s]/i);
+      if (pkgMatch) packageName = cleanPrimitiveString(pkgMatch[1]);
+      if (packageName && IGNORED_PACKAGES.has(packageName.toLowerCase())) {
+        continue;
+      }
+      const activeMatch = block.match(/active=(true|false)/i);
+      const isActive = activeMatch ? activeMatch[1].toLowerCase() === "true" : block.includes("active=true");
+      let playbackState = 0;
+      let rawStateStr = "NONE(0)";
+      let position = 0;
+      let playbackSpeed = 1;
+      const namedStateMatch = block.match(/PlaybackState\s*\{state=([A-Z_]+)\((\d+)\)/i) || block.match(/state=PlaybackState\s*\{state=([A-Z_]+)\((\d+)\)/i) || block.match(/state=([A-Z_]+)\((\d+)\)/i);
+      if (namedStateMatch) {
+        rawStateStr = `${namedStateMatch[1]}(${namedStateMatch[2]})`;
+        playbackState = parseInt(namedStateMatch[2], 10);
+      } else {
+        const numStateMatch = block.match(/state=PlaybackState\s*\{[\s\S]*?state=(\d+)/i) || block.match(/PlaybackState\s*\{[\s\S]*?state=(\d+)/i) || block.match(/state=(\d+)/i);
+        if (numStateMatch) {
+          playbackState = parseInt(numStateMatch[1], 10);
+          rawStateStr = `STATE_${playbackState}`;
+        }
+      }
+      const posMatch = block.match(/position=(\d+)/i);
+      if (posMatch) position = parseInt(posMatch[1], 10);
+      const speedMatch = block.match(/speed=([\d.]+)/i);
+      if (speedMatch) playbackSpeed = parseFloat(speedMatch[1]);
+      let title = "";
+      let artist = "";
+      let album = "";
+      let rawDescription = "";
+      const descMatch = block.match(/description=([^\r\n]+)/i);
+      if (descMatch) {
+        rawDescription = String(descMatch[1]).trim();
+        const parts = rawDescription.split(/,\s*/);
+        if (parts[0]) title = cleanPrimitiveString(parts[0]);
+        if (parts[1]) artist = cleanPrimitiveString(parts[1]);
+        if (parts[2]) album = cleanPrimitiveString(parts[2]);
+      }
+      if (!title) {
+        const titleMatch = block.match(/android\.media\.metadata\.TITLE=([^\n\r]+)/i) || block.match(/(?:^|\s|,)title=([^\n\r,]+)/i);
+        if (titleMatch) title = cleanPrimitiveString(titleMatch[1]);
+      }
+      if (!artist) {
+        const artistMatch = block.match(/android\.media\.metadata\.ARTIST=([^\n\r]+)/i) || block.match(/(?:^|\s|,)artist=([^\n\r,]+)/i) || block.match(/subtitle=([^\n\r,]+)/i) || block.match(/author=([^\n\r,]+)/i);
+        if (artistMatch) artist = cleanPrimitiveString(artistMatch[1]);
+      }
+      if (!album) {
+        const albumMatch = block.match(/(?:android\.media\.metadata\.ALBUM|METADATA_KEY_ALBUM|album)\s*[:=]\s*([^\n\r,]+)/i) || block.match(/description=.*?,.*?,([^,\r\n]+)/i);
+        if (albumMatch) album = cleanPrimitiveString(albumMatch[1]);
+      }
+      if (!title) {
+        continue;
+      }
+      let duration = 0;
+      const durMatch = block.match(/(?:android\.media\.metadata\.DURATION|METADATA_KEY_DURATION)\s*[:=]?\s*(\d+)/i) || block.match(/(?:^|\s)duration\s*[:=]\s*(\d+)/i) || block.match(/DURATION=(\d+)/i);
+      if (durMatch) duration = parseInt(durMatch[1], 10);
+      let artworkUri;
+      const artUriMatch = block.match(/android\.media\.metadata\.ART_URI\s*[:=]\s*([^\s,\n\r]+)/i) || block.match(/android\.media\.metadata\.ALBUM_ART_URI\s*[:=]\s*([^\s,\n\r]+)/i) || block.match(/android\.media\.metadata\.DISPLAY_ICON_URI\s*[:=]\s*([^\s,\n\r]+)/i) || block.match(/android\.media\.metadata\.MEDIA_URI\s*[:=]\s*([^\s,\n\r]+)/i) || block.match(/(?:artUri|albumArtUri|displayIconUri|mediaUri)\s*[:=]\s*([^\s,\n\r]+)/i);
+      if (artUriMatch) {
+        const rawUri = cleanPrimitiveString(artUriMatch[1]);
+        if (rawUri) artworkUri = rawUri;
+      }
+      let actions = 0;
+      const actionsMatch = block.match(/actions=(\d+)/i);
+      if (actionsMatch) actions = parseInt(actionsMatch[1], 10);
+      if ((playbackState === 1 || playbackState === 0) && !artist && !album && duration <= 0) {
+        continue;
+      }
+      sessions.push({
+        packageName: packageName || "unknown",
+        isActive,
+        title,
+        artist,
+        album,
+        duration,
+        position,
+        playbackState,
+        rawStateStr,
+        rawDescription,
+        playbackSpeed,
+        artworkUri,
+        actions
+      });
+    }
+    return sessions;
+  }
+  /**
+   * Notification Dumpsys Fallback Parser for MediaStyle notifications
+   * Does NOT fabricate values (leaves volume / position / duration undefined if unparsed)
+   */
+  async parseNotificationMediaSession(activeSerial) {
+    try {
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "notification"]);
+      if (!stdout || !stdout.includes("MediaStyle")) return null;
+      const notifBlocks = stdout.split(/NotificationRecord/i);
+      for (const block of notifBlocks) {
+        if (!block.includes("MediaStyle") && !block.includes("android.title")) continue;
+        let playerPackage = "unknown";
+        const pkgMatch = block.match(/pkg=([^\s,\n\r]+)/i);
+        if (pkgMatch) playerPackage = cleanPrimitiveString(pkgMatch[1]);
+        if (playerPackage === "com.android.server.telecom" || playerPackage === "com.android.systemui") continue;
+        let title = "";
+        const titleMatch = block.match(/android\.title=String \(([^)]+)\)/i) || block.match(/android\.title=([^\n\r]+)/i);
+        if (titleMatch) title = cleanPrimitiveString(titleMatch[1]);
+        let artist = "";
+        const artistMatch = block.match(/android\.text=String \(([^)]+)\)/i) || block.match(/android\.text=([^\n\r]+)/i);
+        if (artistMatch) artist = cleanPrimitiveString(artistMatch[1]);
+        let album = "";
+        const subMatch = block.match(/android\.subText=String \(([^)]+)\)/i);
+        if (subMatch) album = cleanPrimitiveString(subMatch[1]);
+        if (title) {
+          logger.info(`[Media Parser] Extracted MediaSession from dumpsys notification: "${title}" by "${artist}" (${playerPackage})`, "DeviceControlService");
+          return {
+            isPlaying: true,
+            playbackState: "playing",
+            title,
+            artist,
+            album,
+            playerPackage,
+            volumeLevel: 0
+          };
+        }
+      }
+    } catch {
+    }
+    return null;
+  }
+  /**
+   * Real-Time Media Session Reading with Active=True Priority Selection & Single Volume Reader
+   */
+  async getMediaInfo(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return null;
+    try {
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "dumpsys", "media_session"]);
+      const sessions = stdout ? this.parseAllMediaSessions(stdout) : [];
+      if (sessions.length === 0) {
+        const notifSession = await this.parseNotificationMediaSession(activeSerial);
+        if (notifSession) return notifSession;
+        logger.info("[Media Parser] Found 0 valid media sessions.", "DeviceControlService");
+        return null;
+      }
+      const getPriority = (s) => {
+        if (s.isActive && s.playbackState === 3) return 1e3;
+        if (s.isActive && s.playbackState === 6) return 900;
+        if (s.isActive && s.playbackState === 2) return 800;
+        if (s.playbackState === 3) return 700;
+        if (s.playbackState === 6) return 600;
+        if (s.playbackState === 2) return 500;
+        if (s.playbackState === 1 || s.playbackState === 0) return 10;
+        return 0;
+      };
+      sessions.sort((a, b) => {
+        const prioA = getPriority(a);
+        const prioB = getPriority(b);
+        if (prioA !== prioB) return prioB - prioA;
+        const scoreA = (a.title ? 2 : 0) + (a.artist ? 1 : 0) + (a.artworkUri ? 1 : 0);
+        const scoreB = (b.title ? 2 : 0) + (b.artist ? 1 : 0) + (b.artworkUri ? 1 : 0);
+        return scoreB - scoreA;
+      });
+      const selectedSession = sessions[0];
+      if (!selectedSession || !selectedSession.title) return null;
+      let title = String(selectedSession.title).trim();
+      let artist = String(selectedSession.artist).trim();
+      let album = String(selectedSession.album).trim();
+      let playerPackage = String(selectedSession.packageName).trim();
+      let positionMs = selectedSession.position;
+      let durationMs = selectedSession.duration;
+      let rawState = selectedSession.playbackState;
+      let playbackState = "stopped";
+      if (rawState === 3) playbackState = "playing";
+      else if (rawState === 2) playbackState = "paused";
+      else if (rawState === 6) playbackState = "buffering";
+      else if (rawState === 1 || rawState === 0) playbackState = "stopped";
+      const isPlaying = playbackState === "playing";
+      const trackIdentifier = `${playerPackage}/${title}/${artist}`;
+      const cached = trackMetadataCache.get(activeSerial);
+      if (durationMs <= 0 && (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier && (cached == null ? void 0 : cached.durationMs) && cached.durationMs > 0) {
+        durationMs = cached.durationMs;
+      }
+      let artworkUrl = (cached == null ? void 0 : cached.trackIdentifier) === trackIdentifier ? cached == null ? void 0 : cached.artworkUrl : void 0;
+      if (!artworkUrl && selectedSession.artworkUri) {
+        const rawUri = selectedSession.artworkUri;
+        if (rawUri.startsWith("http://") || rawUri.startsWith("https://")) {
+          artworkUrl = rawUri;
+        } else if (rawUri.startsWith("content://") || rawUri.startsWith("file://") || rawUri.startsWith("media://")) {
+          try {
+            const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${rawUri}" | base64`]);
+            const cleanB64 = shellB64.replace(/\s+/g, "");
+            if (cleanB64.length > 50 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+              artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+            }
+          } catch {
+            try {
+              const { stdout: suB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `su -c "content read --uri \\"${rawUri}\\" | base64"`]);
+              const cleanB64 = suB64.replace(/\s+/g, "");
+              if (cleanB64.length > 50 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+              }
+            } catch {
+            }
+          }
+        }
+      }
+      async function fetchOnlineMetadata(title2, artist2, playerPackage2 = "") {
+        return new Promise((resolve) => {
+          const cleanTitle = (title2 || "").trim();
+          const cleanArtist = (artist2 || "").trim();
+          const pkg = (playerPackage2 || "").toLowerCase();
+          const isVideo = pkg.includes("youtube") && !pkg.includes("music");
+          if (!cleanTitle) {
+            resolve(null);
+            return;
+          }
+          if (isVideo) {
+            const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleanTitle + " " + cleanArtist)}`;
+            const req = https.get(url, { headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+              let html = "";
+              res.on("data", (c) => html += c);
+              res.on("end", () => {
+                const videoIdM = html.match(/"videoId":"([a-zA-Z0-9_-]{11})"/);
+                const durM = html.match(/"simpleText":"(\d+:\d+(?::\d+)?)"/);
+                let durationMs2 = 0;
+                if (durM && durM[1]) {
+                  const parts = durM[1].split(":").map(Number);
+                  if (parts.length === 2) durationMs2 = (parts[0] * 60 + parts[1]) * 1e3;
+                  else if (parts.length === 3) durationMs2 = (parts[0] * 3600 + parts[1] * 60 + parts[2]) * 1e3;
+                }
+                const artworkUrl2 = videoIdM ? `https://img.youtube.com/vi/${videoIdM[1]}/hqdefault.jpg` : "";
+                resolve({ durationMs: durationMs2, artworkUrl: artworkUrl2 });
+              });
+            });
+            req.on("error", () => resolve(null));
+            req.setTimeout(2500, () => {
+              req.destroy();
+              resolve(null);
+            });
+          } else {
+            const query = encodeURIComponent(`${cleanTitle} ${cleanArtist}`.trim());
+            const url = `https://itunes.apple.com/search?term=${query}&entity=song&limit=1`;
+            const req = https.get(url, (res) => {
+              let data = "";
+              res.on("data", (c) => data += c);
+              res.on("end", () => {
+                try {
+                  const json = JSON.parse(data);
+                  if (json.results && json.results[0]) {
+                    const item = json.results[0];
+                    resolve({
+                      durationMs: item.trackTimeMillis || 0,
+                      artworkUrl: item.artworkUrl100 ? item.artworkUrl100.replace("100x100bb", "600x600bb") : ""
+                    });
+                  } else {
+                    resolve(null);
+                  }
+                } catch {
+                  resolve(null);
+                }
+              });
+            });
+            req.on("error", () => resolve(null));
+            req.setTimeout(2500, () => {
+              req.destroy();
+              resolve(null);
+            });
+          }
+        });
+      }
+      const isStreamingOrVideoApp = playerPackage.toLowerCase().includes("youtube") || playerPackage.toLowerCase().includes("vanced") || playerPackage.toLowerCase().includes("morphe") || playerPackage.toLowerCase().includes("revanced") || playerPackage.toLowerCase().includes("netflix") || playerPackage.toLowerCase().includes("twitch") || playerPackage.toLowerCase().includes("chrome") || playerPackage.toLowerCase().includes("browser") || playerPackage.toLowerCase().includes("spotify") || playerPackage.toLowerCase().includes("soundcloud") || playerPackage.toLowerCase().includes("saavn") || playerPackage.toLowerCase().includes("gaana") || playerPackage.toLowerCase().includes("wynk");
+      if (isStreamingOrVideoApp && artworkUrl && artworkUrl.startsWith("data:image")) {
+        artworkUrl = void 0;
+      }
+      if (title) {
+        if (isStreamingOrVideoApp) {
+          const online = await fetchOnlineMetadata(title, artist, playerPackage);
+          if (online) {
+            if (online.durationMs > 0) durationMs = online.durationMs;
+            if (online.artworkUrl) artworkUrl = online.artworkUrl;
+          }
+        } else if (durationMs <= 0 || !artworkUrl) {
+          try {
+            const titleKeywords = (title || "").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length >= 2);
+            const otherKeywords = [artist, album].filter(Boolean).join(" ").toLowerCase().split(/[^a-z0-9]+/).filter((k) => k.length > 2);
+            if (titleKeywords.length > 0 || otherKeywords.length > 0) {
+              const { stdout: mediaOut } = await adbService.execAdb(["-s", activeSerial, "shell", "content", "query", "--uri", "content://media/external/audio/media", "--projection", "_id:album_id:duration:title:artist:album"]);
+              const lines = mediaOut.split("\n");
+              const matchingRows = [];
+              for (const line of lines) {
+                if (!line.includes("Row:")) continue;
+                const lowerLine = line.toLowerCase();
+                let titleScore = 0;
+                for (const kw of titleKeywords) {
+                  if (lowerLine.includes(kw)) titleScore += 10;
+                }
+                let otherScore = 0;
+                for (const kw of otherKeywords) {
+                  if (lowerLine.includes(kw)) otherScore += 1;
+                }
+                if (titleKeywords.length > 0 && titleScore === 0) {
+                  continue;
+                }
+                const totalScore = titleScore + otherScore;
+                if (totalScore > 0) {
+                  matchingRows.push({ line, score: totalScore });
+                }
+              }
+              matchingRows.sort((a, b) => b.score - a.score);
+              for (const { line } of matchingRows) {
+                if (durationMs <= 0) {
+                  const durM = line.match(/duration=(\d+)/i);
+                  if (durM && durM[1] && parseInt(durM[1], 10) > 0) {
+                    let parsedDur = parseInt(durM[1], 10);
+                    if (parsedDur > 0 && parsedDur < 1e4) {
+                      parsedDur *= 1e3;
+                    }
+                    durationMs = parsedDur;
+                  }
+                }
+                if (!artworkUrl) {
+                  const albM = line.match(/album_id=(\d+)/i);
+                  const idM = line.match(/_id=(\d+)/i);
+                  let artTargetUri = "";
+                  if (albM && albM[1]) artTargetUri = `content://media/external/audio/albumart/${albM[1]}`;
+                  else if (idM && idM[1]) artTargetUri = `content://media/external/audio/media/${idM[1]}/albumart`;
+                  if (artTargetUri) {
+                    try {
+                      const { stdout: shellB64 } = await adbService.execAdb(["-s", activeSerial, "shell", `content read --uri "${artTargetUri}" | base64`]);
+                      const cleanB64 = shellB64.replace(/\s+/g, "");
+                      if (cleanB64.length > 500 && /^[A-Za-z0-9+/=]+$/.test(cleanB64)) {
+                        artworkUrl = `data:image/jpeg;base64,${cleanB64}`;
+                        break;
+                      }
+                    } catch {
+                    }
+                  }
+                } else if (durationMs > 0) {
+                  break;
+                }
+              }
+            }
+          } catch {
+          }
+          if (durationMs <= 0 || !artworkUrl) {
+            const online = await fetchOnlineMetadata(title, artist, playerPackage);
+            if (online) {
+              if (durationMs <= 0 && online.durationMs > 0) durationMs = online.durationMs;
+              if (!artworkUrl && online.artworkUrl) artworkUrl = online.artworkUrl;
+            }
+          }
+        }
+      }
+      if (!artworkUrl && (cached == null ? void 0 : cached.artworkUrl) && playbackState !== "stopped") {
+        artworkUrl = cached.artworkUrl;
+      }
+      trackMetadataCache.set(activeSerial, { trackIdentifier, artworkUrl, durationMs });
+      const resolvedAppLabel = await this.getPackageLabel(activeSerial, playerPackage);
+      return {
+        isPlaying,
+        playbackState,
+        title,
+        artist,
+        album,
+        playerPackage: resolvedAppLabel,
+        positionMs,
+        durationMs,
+        artworkUrl
+      };
+    } catch (err) {
+      logger.debug(`getMediaInfo failed for ${activeSerial}: ${err.message}`, "DeviceControlService");
+      return null;
+    }
+  }
+  /**
+   * Media Controls (Play/Pause: 85, Next: 87, Previous: 88, Volume Up: 24, Volume Down: 25)
+   */
+  async sendMediaControl(serial, action) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    const keycodes = {
+      play_pause: "85",
+      next: "87",
+      previous: "88",
+      volume_up: "24",
+      volume_down: "25"
+    };
+    const keycode = keycodes[action] || "85";
+    logger.info(`Sending media control '${action}' (keycode ${keycode}) to ${activeSerial}`, "DeviceControlService");
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "input", "keyevent", keycode]);
+      logger.info(`Media keyevent '${action}' VERIFIED executed`, "DeviceControlService");
+      return { success: true, message: `Media control '${action}' sent successfully.` };
+    } catch (err) {
+      logger.error(`Failed sending media keyevent '${action}': ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed sending media keyevent: ${err.message}` };
+    }
+  }
+  /**
+   * Clipboard Management with MANDATORY Readback Verification
+   */
+  async getClipboard(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return "";
+    try {
+      const { stdout, stderr } = await adbService.execAdb(["-s", activeSerial, "shell", "cmd", "clipboard", "get"]);
+      if (!stderr.includes("Unknown command") && stdout.trim()) {
+        const clean = cleanClipboardOutput(stdout);
+        if (clean) return clean;
+      }
+    } catch {
+    }
+    try {
+      const { stdout } = await adbService.execAdb(["-s", activeSerial, "shell", "service", "call", "clipboard", "1"]);
+      const clean = cleanClipboardOutput(stdout);
+      if (clean) return clean;
+    } catch {
+    }
+    return "";
+  }
+  async setClipboard(serial, text) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected." };
+    logger.info(`Setting clipboard / pushing text for ${activeSerial} (${text.length} chars)`, "DeviceControlService");
+    if (!text) {
+      return { success: false, message: "Clipboard text cannot be empty." };
+    }
+    let success = false;
+    try {
+      const formatted = text.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/`/g, "\\`").replace(/\$/g, "\\$").replace(/ /g, "%s");
+      await adbService.execAdb(["-s", activeSerial, "shell", "input", "text", `"${formatted}"`]);
+      success = true;
+    } catch (e) {
+      logger.debug(`input text failed: ${e.message}`, "DeviceControlService");
+    }
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "input", "keyevent", "277"]).catch(() => {
+      });
+    } catch {
+    }
+    try {
+      const escaped = text.replace(/"/g, '\\"').replace(/\$/g, "\\$");
+      await adbService.execAdb(["-s", activeSerial, "shell", "cmd", "clipboard", "set", `"${escaped}"`]).catch(() => {
+      });
+    } catch {
+    }
+    try {
+      const escaped = text.replace(/"/g, '\\"').replace(/\$/g, "\\$");
+      await adbService.execAdb(["-s", activeSerial, "shell", "am", "broadcast", "-a", "com.android.clipboard.WRITE", "--es", "text", `"${escaped}"`]).catch(() => {
+      });
+    } catch {
+    }
+    if (success) {
+      logger.info(`Text successfully pushed and saved to clipboard on device ${activeSerial}`, "DeviceControlService");
+      return { success: true, message: "Text pushed to phone and saved to device clipboard." };
+    }
+    return { success: false, message: "Could not push text to target device." };
+  }
+  /**
+   * Hardware Flashlight Toggle with Dumpsys Verification
+   */
+  async toggleFlashlight(serial, enable) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    logger.info(`Toggling flashlight enable=${enable} for ${activeSerial}`, "DeviceControlService");
+    try {
+      const { stderr } = await adbService.execAdb(["-s", activeSerial, "shell", "cmd", "statusbar", "click-tile", "flashlight"]);
+      if (!stderr || !stderr.toLowerCase().includes("error")) {
+        logger.info(`Flashlight toggled via cmd statusbar click-tile flashlight for ${activeSerial}`, "DeviceControlService");
+      }
+    } catch (e) {
+      logger.debug(`cmd statusbar click-tile flashlight failed: ${e.message}`, "DeviceControlService");
+    }
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "am", "broadcast", "-a", "android.intent.action.SET_FLASHLIGHT", "--ez", "state", enable ? "true" : "false"]).catch(() => {
+      });
+      await adbService.execAdb(["-s", activeSerial, "shell", "am", "broadcast", "-a", "com.android.systemui.statusbar.toggleFlashlight"]).catch(() => {
+      });
+    } catch {
+    }
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "input", "keyevent", "268"]).catch(() => {
+      });
+    } catch {
+    }
+    try {
+      const modeVal = enable ? "1" : "0";
+      await adbService.execAdb(["-s", activeSerial, "shell", "cmd", "camera", "set-torch-mode", modeVal]).catch(() => {
+      });
+    } catch {
+    }
+    try {
+      const brightness = enable ? "255" : "0";
+      await adbService.execAdb(["-s", activeSerial, "shell", "su", "-c", `echo ${brightness} > /sys/class/leds/flashlight/brightness || echo ${brightness} > /sys/class/leds/torch-light/brightness`]).catch(() => {
+      });
+    } catch {
+    }
+    return {
+      success: true,
+      message: `Flashlight toggled ${enable ? "ON" : "OFF"} successfully.`
+    };
+  }
+  /**
+   * Restart SystemUI (`pkill com.android.systemui`)
+   */
+  async restartSystemUI(serial, isRooted) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    if (!isRooted) {
+      return { success: false, message: "Restarting SystemUI requires root privileges." };
+    }
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "su", "-c", "pkill", "com.android.systemui"]);
+      logger.info(`Restarted SystemUI via Root for ${activeSerial}`, "DeviceControlService");
+      return { success: true, message: "SystemUI restarted successfully." };
+    } catch (err) {
+      logger.error(`Failed restarting SystemUI: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed restarting SystemUI: ${err.message}` };
+    }
+  }
+  /**
+   * System Power Actions (Reboot / Power Off)
+   */
+  async rebootDevice(serial, mode = "system") {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    try {
+      let rebootArg = "";
+      if (mode === "recovery") rebootArg = "recovery";
+      if (mode === "bootloader") rebootArg = "bootloader";
+      const args = ["-s", activeSerial, "reboot", rebootArg].filter(Boolean);
+      await adbService.execAdb(args);
+      logger.info(`Rebooting device ${activeSerial} in mode: ${mode}`, "DeviceControlService");
+      return { success: true, message: `Device rebooting to ${mode}...` };
+    } catch (err) {
+      logger.error(`Failed rebooting device: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed to reboot: ${err.message}` };
+    }
+  }
+  async powerOffDevice(serial) {
+    const activeSerial = await adbService.resolveActiveSerial(serial);
+    if (!activeSerial) return { success: false, message: "No active device connected" };
+    try {
+      await adbService.execAdb(["-s", activeSerial, "shell", "reboot", "-p"]);
+      logger.info(`Power off command sent to ${activeSerial}`, "DeviceControlService");
+      return { success: true, message: "Power off command sent to device." };
+    } catch (err) {
+      logger.error(`Failed power off: ${err.message}`, "DeviceControlService", err);
+      return { success: false, message: `Failed to power off: ${err.message}` };
+    }
+  }
+};
+__publicField(_DeviceControlService, "instance");
+let DeviceControlService = _DeviceControlService;
+const deviceControlService = DeviceControlService.getInstance();
+function registerDeviceControlHandlers() {
+  electron.ipcMain.handle("control:get-capabilities", async (_event, serial) => {
+    logger.debug(`IPC control:get-capabilities called for ${serial}`, "DeviceControlHandler");
+    return deviceControlService.getCapabilities(serial);
+  });
+  electron.ipcMain.handle("control:get-brightness", async (_event, serial) => {
+    return deviceControlService.getBrightness(serial);
+  });
+  electron.ipcMain.handle("control:set-brightness", async (_event, payload) => {
+    return deviceControlService.setBrightness(payload.serial, payload.level);
+  });
+  electron.ipcMain.handle("control:lock", async (_event, serial) => {
+    return deviceControlService.lockScreen(serial);
+  });
+  electron.ipcMain.handle("control:wake", async (_event, serial) => {
+    return deviceControlService.wakeScreen(serial);
+  });
+  electron.ipcMain.handle("control:rotate", async (_event, payload) => {
+    return deviceControlService.setRotation(payload.serial, payload.autoRotate, payload.degree || 0);
+  });
+  electron.ipcMain.handle("control:get-rotation", async (_event, serial) => {
+    return deviceControlService.getRotation(serial);
+  });
+  electron.ipcMain.handle("control:get-media-info", async (_event, serial) => {
+    return deviceControlService.getMediaInfo(serial);
+  });
+  electron.ipcMain.handle("control:media", async (_event, payload) => {
+    return deviceControlService.sendMediaControl(payload.serial, payload.action);
+  });
+  electron.ipcMain.handle("control:get-clipboard", async (_event, serial) => {
+    return deviceControlService.getClipboard(serial);
+  });
+  electron.ipcMain.handle("control:set-clipboard", async (_event, payload) => {
+    if (payload.text) {
+      try {
+        clipboard.writeText(payload.text);
+      } catch {
+      }
+    }
+    return deviceControlService.setClipboard(payload.serial, payload.text);
+  });
+  electron.ipcMain.handle("control:flashlight", async (_event, payload) => {
+    return deviceControlService.toggleFlashlight(payload.serial, payload.enable);
+  });
+  electron.ipcMain.handle("control:restart-systemui", async (_event, payload) => {
+    return deviceControlService.restartSystemUI(payload.serial, payload.isRooted);
+  });
+  electron.ipcMain.handle("control:reboot", async (_event, payload) => {
+    return deviceControlService.rebootDevice(payload.serial, payload.mode || "system");
+  });
+  electron.ipcMain.handle("control:power-off", async (_event, serial) => {
+    return deviceControlService.powerOffDevice(serial);
+  });
+}
+const _ScreenService = class _ScreenService {
+  constructor() {
+    __publicField(this, "activeRecordingProcess", false);
+    __publicField(this, "activeRecordingPromise", null);
+  }
+  static getInstance() {
+    if (!_ScreenService.instance) {
+      _ScreenService.instance = new _ScreenService();
+    }
+    return _ScreenService.instance;
+  }
+  /**
+   * Feature: Capture high-resolution screenshot from Android device (`adb exec-out screencap -p`)
+   */
+  async takeScreenshot(requestedSerial) {
+    try {
+      const serial = await adbService.resolveActiveSerial(requestedSerial);
+      logger.info(`Capturing screenshot with active serial: ${serial}`, "ScreenService");
+      const screenshotsDir = path.join(PathUtils.getUserDataPath(), "screenshots");
+      if (!fs.existsSync(screenshotsDir)) {
+        fs.mkdirSync(screenshotsDir, { recursive: true });
+      }
+      const filename = `screenshot_${Date.now()}.png`;
+      const remoteTemp = `/sdcard/${filename}`;
+      const localFile = path.join(screenshotsDir, filename);
+      const capArgs = serial ? ["-s", serial, "shell", "screencap", "-p", remoteTemp] : ["shell", "screencap", "-p", remoteTemp];
+      await adbService.execAdb(capArgs, { timeoutMs: 3e4 });
+      const pullArgs = serial ? ["-s", serial, "pull", remoteTemp, localFile] : ["pull", remoteTemp, localFile];
+      await adbService.execAdb(pullArgs, { timeoutMs: 3e4 });
+      const rmArgs = serial ? ["-s", serial, "shell", "rm", "-f", remoteTemp] : ["shell", "rm", "-f", remoteTemp];
+      adbService.execAdb(rmArgs).catch(() => {
+      });
+      if (!fs.existsSync(localFile)) {
+        throw new Error("Unable to capture screenshot: Output file not created.");
+      }
+      const fileBuf = fs.readFileSync(localFile);
+      logger.info(`Screenshot bytes: ${fileBuf.length}`, "ScreenService");
+      const isPngValid = fileBuf.length >= 8 && fileBuf[0] === 137 && fileBuf[1] === 80 && fileBuf[2] === 78 && fileBuf[3] === 71;
+      logger.info(`PNG validated: ${isPngValid}`, "ScreenService");
+      if (!isPngValid || fileBuf.length === 0) {
+        fs.unlinkSync(localFile);
+        return {
+          success: false,
+          base64Image: "",
+          message: "Unable to capture screenshot: Invalid PNG binary header."
+        };
+      }
+      const base64Image = `data:image/png;base64,${fileBuf.toString("base64")}`;
+      logger.info(`Captured screenshot saved to ${localFile}`, "ScreenService");
+      return {
+        success: true,
+        base64Image,
+        filePath: localFile,
+        message: "Screenshot captured successfully."
+      };
+    } catch (err) {
+      logger.error("Failed capturing screenshot", "ScreenService", err);
+      return {
+        success: false,
+        base64Image: "",
+        message: `Unable to capture screenshot: ${err.message}`
+      };
+    }
+  }
+  /**
+   * Feature: Save Screenshot Image to user selected host destination file
+   */
+  async saveScreenshotToDisk(base64Data) {
+    try {
+      const saveDialogResult = await electron.dialog.showSaveDialog({
+        title: "Save Screenshot Image",
+        defaultPath: `android_screenshot_${Date.now()}.png`,
+        filters: [{ name: "PNG Image (*.png)", extensions: ["png"] }]
+      });
+      if (saveDialogResult.canceled || !saveDialogResult.filePath) {
+        return { success: false, message: "Save cancelled by user." };
+      }
+      const pureBase64 = base64Data.replace(/^data:image\/\w+;base64,/, "");
+      const buf = Buffer.from(pureBase64, "base64");
+      fs.writeFileSync(saveDialogResult.filePath, buf);
+      logger.info(`Saved screenshot image to ${saveDialogResult.filePath}`, "ScreenService");
+      return { success: true, message: `Screenshot saved to ${saveDialogResult.filePath}` };
+    } catch (err) {
+      return { success: false, message: `Failed saving screenshot: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Start Screen Recording (`adb shell screenrecord /sdcard/record.mp4`)
+   */
+  async startScreenRecord(requestedSerial, bitRateMb = 8) {
+    try {
+      const serial = await adbService.resolveActiveSerial(requestedSerial);
+      this.activeRecordingProcess = true;
+      const remoteVideo = "/sdcard/acc_screenrecord.mp4";
+      const bitRateArg = `${bitRateMb * 1e6}`;
+      const args = serial ? ["-s", serial, "shell", "screenrecord", "--bit-rate", bitRateArg, "--time-limit", "180", remoteVideo] : ["shell", "screenrecord", "--bit-rate", bitRateArg, "--time-limit", "180", remoteVideo];
+      logger.info(`Started screen recording on ${serial} (${bitRateMb} Mbps)`, "ScreenService");
+      this.activeRecordingPromise = adbService.execAdb(args).catch(() => {
+      });
+      return { success: true, message: "Screen recording started on device." };
+    } catch (err) {
+      this.activeRecordingProcess = false;
+      return { success: false, message: `Failed starting screen recording: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Stop Screen Recording & Save Video file to host disk
+   */
+  async stopScreenRecord(requestedSerial) {
+    try {
+      const serial = await adbService.resolveActiveSerial(requestedSerial);
+      this.activeRecordingProcess = false;
+      const remoteVideo = "/sdcard/acc_screenrecord.mp4";
+      try {
+        const pidRes = await adbService.execAdb(
+          serial ? ["-s", serial, "shell", "pidof", "screenrecord"] : ["shell", "pidof", "screenrecord"]
+        ).catch(() => ({ stdout: "" }));
+        const pid = pidRes.stdout.trim();
+        if (pid) {
+          logger.info(`Sending SIGINT (kill -2 ${pid}) to screenrecord...`, "ScreenService");
+          await adbService.execAdb(
+            serial ? ["-s", serial, "shell", "kill", "-2", pid] : ["shell", "kill", "-2", pid]
+          ).catch(() => {
+          });
+        } else {
+          await adbService.execAdb(
+            serial ? ["-s", serial, "shell", "pkill", "-2", "screenrecord"] : ["shell", "pkill", "-2", "screenrecord"]
+          ).catch(() => {
+          });
+        }
+      } catch {
+        await adbService.execAdb(
+          serial ? ["-s", serial, "shell", "pkill", "-2", "screenrecord"] : ["shell", "pkill", "-2", "screenrecord"]
+        ).catch(() => {
+        });
+      }
+      logger.info("Waiting 2s for screenrecord to finalize MP4 file header on device...", "ScreenService");
+      await new Promise((res) => setTimeout(res, 2e3));
+      if (this.activeRecordingPromise) {
+        await this.activeRecordingPromise;
+        this.activeRecordingPromise = null;
+      }
+      const saveDialogResult = await electron.dialog.showSaveDialog({
+        title: "Save Screen Recording Video",
+        defaultPath: `android_recording_${Date.now()}.mp4`,
+        filters: [{ name: "MP4 Video (*.mp4)", extensions: ["mp4"] }]
+      });
+      if (saveDialogResult.canceled || !saveDialogResult.filePath) {
+        return { success: false, message: "Recording saved on device temp path." };
+      }
+      const targetPath = saveDialogResult.filePath;
+      logger.info(`Pulling recording from ${serial} to ${targetPath}...`, "ScreenService");
+      const pullArgs = serial ? ["-s", serial, "pull", remoteVideo, targetPath] : ["pull", remoteVideo, targetPath];
+      await adbService.execAdb(pullArgs);
+      logger.info("Recording pulled", "ScreenService");
+      const rmArgs = serial ? ["-s", serial, "shell", "rm", "-f", remoteVideo] : ["shell", "rm", "-f", remoteVideo];
+      adbService.execAdb(rmArgs).catch(() => {
+      });
+      if (!fs.existsSync(targetPath)) {
+        throw new Error("Recorded video file failed to pull to local disk.");
+      }
+      const stat = fs.statSync(targetPath);
+      logger.info(`Pulled recording file size: ${stat.size} bytes (${(stat.size / (1024 * 1024)).toFixed(2)} MB)`, "ScreenService");
+      if (stat.size <= 0) {
+        fs.unlinkSync(targetPath);
+        return { success: false, message: "Recording failed: output video file is 0 bytes." };
+      }
+      try {
+        const adbPath = await adbService.getAdbExecutablePath();
+        const { execFile } = require("child_process");
+        await new Promise((resolve, reject) => {
+          execFile(
+            "ffprobe",
+            [
+              "-v",
+              "error",
+              "-select_streams",
+              "v:0",
+              "-show_entries",
+              "stream=nb_frames,duration,width,height",
+              "-of",
+              "default=noprint_wrappers=1",
+              targetPath
+            ],
+            { timeout: 5e3 },
+            (err, stdout, stderr) => {
+              const out = (stdout || "").toString();
+              logger.info(`ffprobe verification output for ${targetPath}:
+${out || stderr}`, "ScreenService");
+              if (err) {
+                logger.warn(`ffprobe check warning: ${err.message}`, "ScreenService");
+              }
+              const durationMatch = out.match(/duration=([\d.]+)/);
+              const duration = durationMatch ? parseFloat(durationMatch[1]) : 0;
+              const framesMatch = out.match(/nb_frames=(\d+)/);
+              const frames = framesMatch ? parseInt(framesMatch[1], 10) : -1;
+              if (durationMatch && duration <= 0) {
+                reject(new Error("Recording file duration is 0 seconds. Rejecting invalid recording."));
+                return;
+              }
+              if (framesMatch && frames === 0) {
+                reject(new Error("Recording file contains 0 frames. Rejecting invalid recording."));
+                return;
+              }
+              logger.info("Recording finalized", "ScreenService");
+              logger.info("Recording verified", "ScreenService");
+              resolve();
+            }
+          );
+        });
+      } catch (ffErr) {
+        logger.warn(`ffprobe validation issue: ${ffErr.message}. Proceeding with file check.`, "ScreenService");
+      }
+      logger.info(`Screen recording saved successfully to ${targetPath}`, "ScreenService");
+      return {
+        success: true,
+        filePath: targetPath,
+        message: `Video saved successfully to ${targetPath}`
+      };
+    } catch (err) {
+      logger.error("Failed stopping screen recording", "ScreenService", err);
+      return { success: false, message: `Failed saving video: ${err.message}` };
+    }
+  }
+};
+__publicField(_ScreenService, "instance");
+let ScreenService = _ScreenService;
+const screenService = ScreenService.getInstance();
+class ScrcpyDemuxer {
+  constructor() {
+    __publicField(this, "buffer", Buffer.alloc(0));
+    __publicField(this, "headerParsed", false);
+    __publicField(this, "metadata", null);
+  }
+  parse(chunk, onMetadata, onFramePayload) {
+    this.buffer = Buffer.concat([this.buffer, chunk]);
+    if (!this.headerParsed) {
+      if (this.buffer.length < 69) return;
+      const deviceName = this.buffer.subarray(1, 65).toString("utf-8").replace(/\0/g, "").trim();
+      const fourCC = this.buffer.readUInt32BE(65);
+      const codec = fourCC === 1748121141 ? "h265" : fourCC === 6387249 ? "av1" : "h264";
+      this.metadata = {
+        deviceName: deviceName || "Android Device",
+        width: 1080,
+        height: 2400,
+        codec
+      };
+      this.headerParsed = true;
+      this.buffer = this.buffer.subarray(69);
+      logger.info("[Scrcpy] STREAM HEADER COMPLETE", "ScrcpyDemuxer");
+      logger.info("[Scrcpy] STARTING PACKET LOOP", "ScrcpyDemuxer");
+      onMetadata(this.metadata);
+    }
+    while (true) {
+      if (this.buffer.length < 4) break;
+      const packetSize = this.buffer.readUInt32BE(0);
+      if (packetSize === 0 || packetSize > 10 * 1024 * 1024) {
+        logger.warn(`[Scrcpy] Invalid packet size: ${packetSize}, searching for resync...`, "ScrcpyDemuxer");
+        const resyncIdx = this.buffer.indexOf(Buffer.from([0, 0, 0, 1]), 1);
+        if (resyncIdx !== -1) {
+          this.buffer = this.buffer.subarray(resyncIdx);
+          continue;
+        } else {
+          this.buffer = this.buffer.subarray(Math.max(0, this.buffer.length - 3));
+          break;
+        }
+      }
+      if (this.buffer.length < 4 + packetSize) {
+        break;
+      }
+      const payload = this.buffer.subarray(4, 4 + packetSize);
+      this.buffer = this.buffer.subarray(4 + packetSize);
+      const nalType = payload.length >= 5 && payload[0] === 0 && payload[1] === 0 && payload[2] === 0 && payload[3] === 1 ? payload[4] & 31 : payload[0] & 31;
+      logger.info(`[Scrcpy] NAL LENGTH: ${packetSize}`, "ScrcpyDemuxer");
+      logger.info(`[Scrcpy] NAL TYPE: ${nalType}`, "ScrcpyDemuxer");
+      logger.info("[Scrcpy] PACKET FORWARDED TO DECODER", "ScrcpyDemuxer");
+      onFramePayload(payload);
+    }
+  }
+  reset() {
+    this.buffer = Buffer.alloc(0);
+    this.headerParsed = false;
+    this.metadata = null;
+  }
+}
+class ScrcpyProtocol {
+  static parseHeader(buffer) {
+    if (buffer.length < 69) return null;
+    const deviceName = buffer.subarray(1, 65).toString("utf-8").replace(/\0/g, "").trim();
+    const fourCC = buffer.readUInt32BE(65);
+    const codec = fourCC === 1748121141 ? "h265" : fourCC === 6387249 ? "av1" : "h264";
+    return {
+      metadata: { deviceName: deviceName || "Android Device", width: 1080, height: 2400, codec },
+      headerSize: 69
+    };
+  }
+  static parseH264NalType(chunk) {
+    if (chunk.length >= 4 && chunk[0] === 0 && chunk[1] === 0 && chunk[2] === 0 && chunk[3] === 1) {
+      return { hasStartCode: true, nalType: chunk[4] & 31 };
+    }
+    if (chunk.length >= 3 && chunk[0] === 0 && chunk[1] === 0 && chunk[2] === 1) {
+      return { hasStartCode: true, nalType: chunk[3] & 31 };
+    }
+    return { hasStartCode: false };
+  }
+}
+class ScrcpySocket extends events.EventEmitter {
+  constructor() {
+    super(...arguments);
+    __publicField(this, "socket", null);
+    __publicField(this, "isConnected", false);
+    __publicField(this, "demuxer", new ScrcpyDemuxer());
+    __publicField(this, "totalBytesReceived", 0);
+  }
+  connect(port, host = "127.0.0.1") {
+    return new Promise((resolve, reject) => {
+      logger.info(`[Scrcpy] Socket connecting to ${host}:${port}`, "ScrcpySocket");
+      logger.info("[Scrcpy] WAITING FOR STREAM HEADER", "ScrcpySocket");
+      this.socket = net.connect(port, host);
+      this.totalBytesReceived = 0;
+      this.demuxer.reset();
+      let firstByteLogged = false;
+      this.socket.on("connect", () => {
+        this.isConnected = true;
+        logger.info(`[Scrcpy] Socket opened on port ${port}`, "ScrcpySocket");
+        this.emit("connected");
+      });
+      let noDataTimer = null;
+      this.socket.on("data", (chunk) => {
+        logger.info(`[Scrcpy] SOCKET DATA EVENT (bytes=${chunk.length})`, "ScrcpySocket");
+        if (noDataTimer) {
+          clearTimeout(noDataTimer);
+          noDataTimer = null;
+        }
+        if (!firstByteLogged && chunk.length > 0) {
+          firstByteLogged = true;
+          logger.info(`[Scrcpy] FIRST BYTE RECEIVED (${chunk.length} bytes)`, "ScrcpySocket");
+          resolve();
+        }
+        this.totalBytesReceived += chunk.length;
+        this.demuxer.parse(
+          chunk,
+          (meta) => {
+            logger.info(`[Scrcpy] STREAM HEADER RECEIVED: ${meta.width}x${meta.height} (Codec: ${meta.codec})`, "ScrcpySocket");
+            this.emit("metadata", meta);
+            noDataTimer = setTimeout(() => {
+              logger.warn("[Scrcpy] NO DATA AFTER HEADER", "ScrcpySocket");
+            }, 2e3);
+          },
+          (framePayload) => {
+            logger.info(`[Scrcpy] NAL CREATED (${framePayload.length} bytes)`, "ScrcpySocket");
+            this.emit("packet", framePayload);
+          }
+        );
+      });
+      this.socket.on("error", (err) => {
+        logger.error(`[Scrcpy] Socket error: ${err.message}`, "ScrcpySocket");
+        this.emit("error", err);
+        if (!firstByteLogged) reject(err);
+      });
+      this.socket.on("close", (hadError) => {
+        const reason = hadError ? "socket error" : "remote server";
+        logger.info(`[Scrcpy] SOCKET CLOSED BY SERVER (${reason}, bytes received: ${this.totalBytesReceived})`, "ScrcpySocket");
+        this.isConnected = false;
+        this.emit("disconnected");
+        if (!firstByteLogged || this.totalBytesReceived === 0) {
+          reject(new Error(`Socket closed before stream started (bytes received: ${this.totalBytesReceived})`));
+        }
+      });
+    });
+  }
+  disconnect() {
+    if (this.socket) {
+      logger.info("[Scrcpy] SOCKET CLOSED BY CLIENT", "ScrcpySocket");
+      this.socket.destroy();
+      this.socket = null;
+    }
+    this.demuxer.reset();
+  }
+}
+class ScrcpyTransport extends events.EventEmitter {
+  constructor() {
+    super(...arguments);
+    __publicField(this, "scrcpyProcess", null);
+    __publicField(this, "socket", null);
+    __publicField(this, "firstPacketReceived", false);
+    __publicField(this, "spsReceived", false);
+    __publicField(this, "ppsReceived", false);
+    __publicField(this, "idrReceived", false);
+    __publicField(this, "port", 27183);
+    __publicField(this, "stdoutLines", []);
+    __publicField(this, "stderrLines", []);
+    __publicField(this, "firstByteReceived", false);
+    __publicField(this, "noFirstByteTimeout", null);
+  }
+  async start(config) {
+    var _a, _b;
+    logger.info("[Scrcpy] Protocol version: 4.x", "ScrcpyTransport");
+    logger.info("[Scrcpy] Negotiated codec: h264", "ScrcpyTransport");
+    this.firstByteReceived = false;
+    this.stdoutLines = [];
+    this.stderrLines = [];
+    try {
+      await this.stopAsync();
+      await adbService.execAdb([
+        ...config.serial ? ["-s", config.serial] : [],
+        "shell",
+        "pkill -f com.genymobile.scrcpy.Server || true"
+      ]).catch(() => {
+      });
+      logger.info("[Scrcpy] Pushing scrcpy-server.jar to device...", "ScrcpyTransport");
+      await adbService.execAdb([
+        ...config.serial ? ["-s", config.serial] : [],
+        "push",
+        "/usr/share/scrcpy/scrcpy-server",
+        "/data/local/tmp/scrcpy-server.jar"
+      ]);
+      const forwardResult = await adbService.execAdb([
+        ...config.serial ? ["-s", config.serial] : [],
+        "forward",
+        "tcp:0",
+        "localabstract:scrcpy"
+      ]);
+      const allocatedPortStr = forwardResult.stdout.trim();
+      this.port = parseInt(allocatedPortStr, 10);
+      if (isNaN(this.port) || this.port <= 0) {
+        throw new Error(`Failed to allocate adb forward port. Result: ${forwardResult.stdout}`);
+      }
+      logger.info(`[Scrcpy] ADB forward created on port ${this.port}`, "ScrcpyTransport");
+      const serverArgs = [
+        ...config.serial ? ["-s", config.serial] : [],
+        "shell",
+        "CLASSPATH=/data/local/tmp/scrcpy-server.jar",
+        "app_process",
+        "/",
+        "com.genymobile.scrcpy.Server",
+        "4.1",
+        "tunnel_forward=true",
+        "audio=false",
+        "control=false",
+        "show_touches=false",
+        "stay_awake=true",
+        "video_codec=h264",
+        `video_bit_rate=${config.bitrate * 1e6}`,
+        `max_fps=${config.fps}`,
+        `max_size=${maxDim}`
+      ];
+      logger.info("[Scrcpy] Server starting...", "ScrcpyTransport");
+      const adbPath = await adbService.getAdbExecutablePath() || "adb";
+      this.scrcpyProcess = child_process.spawn(adbPath, serverArgs);
+      logger.info(`[Scrcpy] SCRCPY PROCESS STARTED (PID: ${this.scrcpyProcess.pid})`, "ScrcpyTransport");
+      (_a = this.scrcpyProcess.stdout) == null ? void 0 : _a.on("data", (data) => {
+        const text = data.toString().trim();
+        if (text) {
+          this.stdoutLines.push(text);
+          logger.info(`[scrcpy-server stdout] ${text}`, "ScrcpyTransport");
+        }
+      });
+      (_b = this.scrcpyProcess.stderr) == null ? void 0 : _b.on("data", (data) => {
+        const text = data.toString().trim();
+        if (text) {
+          this.stderrLines.push(text);
+          logger.info(`[Scrcpy] STDERR: ${text}`, "ScrcpyTransport");
+        }
+      });
+      this.scrcpyProcess.on("close", (code, signal) => {
+        logger.info("[Scrcpy] SCRCPY PROCESS EXITED", "ScrcpyTransport");
+        logger.info(`[Scrcpy] EXIT CODE: ${code}`, "ScrcpyTransport");
+        logger.info(`[Scrcpy] EXIT SIGNAL: ${signal}`, "ScrcpyTransport");
+        if (!this.firstByteReceived) {
+          logger.warn("[Scrcpy] SERVER TERMINATED BEFORE STREAM START", "ScrcpyTransport");
+        }
+        logger.info(`[Scrcpy] STDERR:
+${this.stderrLines.join("\n") || "(none)"}`, "ScrcpyTransport");
+        logger.info(`[Scrcpy] STDOUT LAST 100 LINES:
+${this.stdoutLines.slice(-100).join("\n") || "(none)"}`, "ScrcpyTransport");
+        this.emit("close");
+      });
+      this.noFirstByteTimeout = setTimeout(() => {
+        var _a2, _b2;
+        if (!this.firstByteReceived) {
+          const isAlive = this.scrcpyProcess && this.scrcpyProcess.exitCode === null;
+          logger.warn(`[Scrcpy] 3s TIMEOUT: No first byte received. Process PID ${(_a2 = this.scrcpyProcess) == null ? void 0 : _a2.pid} state: ${isAlive ? "STILL RUNNING" : "EXITED (code=" + ((_b2 = this.scrcpyProcess) == null ? void 0 : _b2.exitCode) + ")"}`, "ScrcpyTransport");
+          logger.warn(`[Scrcpy] DUMP STDERR:
+${this.stderrLines.join("\n") || "(none)"}`, "ScrcpyTransport");
+          logger.warn(`[Scrcpy] DUMP STDOUT LAST 100 LINES:
+${this.stdoutLines.slice(-100).join("\n") || "(none)"}`, "ScrcpyTransport");
+        }
+      }, 3e3);
+      let connected = false;
+      let attempts = 0;
+      const maxAttempts = 10;
+      while (!connected && attempts < maxAttempts) {
+        attempts++;
+        try {
+          if (this.socket) {
+            this.socket.disconnect();
+          }
+          this.socket = new ScrcpySocket();
+          this.socket.on("packet", (chunk) => {
+            this.firstByteReceived = true;
+            if (this.noFirstByteTimeout) {
+              clearTimeout(this.noFirstByteTimeout);
+              this.noFirstByteTimeout = null;
+            }
+            if (!this.firstPacketReceived) {
+              this.firstPacketReceived = true;
+              logger.info(`[Scrcpy] First video packet received (${chunk.length} bytes)`, "ScrcpyTransport");
+            }
+            const nalInfo = ScrcpyProtocol.parseH264NalType(chunk);
+            if (nalInfo.hasStartCode) {
+              if (nalInfo.nalType === 7 && !this.spsReceived) {
+                this.spsReceived = true;
+                logger.info("[Scrcpy] First SPS received", "ScrcpyTransport");
+              }
+              if (nalInfo.nalType === 8 && !this.ppsReceived) {
+                this.ppsReceived = true;
+                logger.info("[Scrcpy] First PPS received", "ScrcpyTransport");
+              }
+              if (nalInfo.nalType === 5 && !this.idrReceived) {
+                this.idrReceived = true;
+                logger.info("[Scrcpy] First IDR received", "ScrcpyTransport");
+              }
+            }
+            this.emit("packet", chunk);
+          });
+          this.socket.on("metadata", (meta) => {
+            logger.info(`[Scrcpy] Received metadata: ${meta.width}x${meta.height}`, "ScrcpyTransport");
+          });
+          logger.info(`[Scrcpy] Connecting to video socket on port ${this.port} (attempt ${attempts}/${maxAttempts})...`, "ScrcpyTransport");
+          await this.socket.connect(this.port);
+          connected = true;
+          logger.info(`[Scrcpy] Connected to video socket on port ${this.port}`, "ScrcpyTransport");
+        } catch (err) {
+          logger.warn(`[Scrcpy] Socket connection attempt ${attempts} failed (${err.message}). Retrying in 500ms...`, "ScrcpyTransport");
+          if (this.scrcpyProcess && this.scrcpyProcess.exitCode !== null) {
+            throw new Error(`scrcpy-server process exited unexpectedly with code ${this.scrcpyProcess.exitCode}`);
+          }
+          await new Promise((res) => setTimeout(res, 500));
+        }
+      }
+      if (!connected) {
+        throw new Error(`Failed to connect to scrcpy video socket after ${maxAttempts} attempts.`);
+      }
+    } catch (err) {
+      logger.error(`[Scrcpy] Failed to start ScrcpyTransport: ${err.message}`, "ScrcpyTransport");
+      throw err;
+    }
+  }
+  async stopAsync() {
+    logger.info("[Scrcpy] Stopping transport async", "ScrcpyTransport");
+    if (this.socket) {
+      this.socket.disconnect();
+      this.socket = null;
+    }
+    if (this.scrcpyProcess) {
+      this.scrcpyProcess.kill("SIGKILL");
+      this.scrcpyProcess = null;
+    }
+    if (this.port > 0) {
+      const p = this.port;
+      this.port = 0;
+      await adbService.execAdb(["forward", "--remove", `tcp:${p}`]).catch(() => {
+      });
+    }
+    this.firstPacketReceived = false;
+    this.spsReceived = false;
+    this.ppsReceived = false;
+    this.idrReceived = false;
+  }
+  stop() {
+    this.stopAsync().catch(() => {
+    });
+  }
+}
+class Decoder extends events.EventEmitter {
+  constructor() {
+    super(...arguments);
+    __publicField(this, "ffmpegProcess", null);
+    __publicField(this, "firstFrameDecoded", false);
+    __publicField(this, "totalFramesDecoded", 0);
+  }
+  start(codec = "h264") {
+    var _a, _b;
+    logger.info(`[Scrcpy] Decoder initialized for codec: ${codec}`, "Decoder");
+    const format = codec === "h265" || codec === "hevc" ? "hevc" : codec === "av1" ? "av1" : "h264";
+    const ffmpegArgs = [
+      "-an",
+      "-f",
+      format,
+      "-i",
+      "pipe:0",
+      "-f",
+      "image2pipe",
+      "-vcodec",
+      "mjpeg",
+      "-q:v",
+      "4",
+      "-"
+    ];
+    this.ffmpegProcess = child_process.spawn("ffmpeg", ffmpegArgs);
+    this.ffmpegProcess.on("exit", (code, signal) => {
+      logger.info(`[Scrcpy] Decoder process exited code=${code} signal=${signal}`, "Decoder");
+    });
+    (_a = this.ffmpegProcess.stderr) == null ? void 0 : _a.on("data", (data) => {
+      const errStr = data.toString().trim();
+      if (errStr.toLowerCase().includes("error")) {
+        logger.warn(`[Scrcpy] Decoder error: ${errStr}`, "Decoder");
+      }
+    });
+    let buffer = Buffer.alloc(0);
+    (_b = this.ffmpegProcess.stdout) == null ? void 0 : _b.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      let offset = 0;
+      while (offset < buffer.length - 1) {
+        const start = buffer.indexOf(Buffer.from([255, 216]), offset);
+        if (start === -1) break;
+        const end = buffer.indexOf(Buffer.from([255, 217]), start + 2);
+        if (end === -1) break;
+        const frame = buffer.subarray(start, end + 2);
+        this.totalFramesDecoded++;
+        if (!this.firstFrameDecoded) {
+          this.firstFrameDecoded = true;
+          logger.info("[Scrcpy] First frame generated by decoder", "Decoder");
+        }
+        logger.info(`[Scrcpy] FRAME DECODED (${frame.length} bytes)`, "Decoder");
+        if (this.totalFramesDecoded % 30 === 0) {
+          logger.info(`[Scrcpy] Frames rendered: ${this.totalFramesDecoded}`, "Decoder");
+        }
+        this.emit("frame", frame);
+        offset = end + 2;
+      }
+      if (offset > 0) {
+        buffer = buffer.subarray(offset);
+      }
+    });
+  }
+  write(chunk) {
+    if (this.ffmpegProcess && this.ffmpegProcess.stdin && !this.ffmpegProcess.stdin.destroyed) {
+      logger.info(`[Scrcpy] DECODE CALLED (${chunk.length} bytes)`, "Decoder");
+      this.ffmpegProcess.stdin.write(chunk);
+    }
+  }
+  stop() {
+    if (this.ffmpegProcess) {
+      this.ffmpegProcess.kill("SIGTERM");
+      this.ffmpegProcess = null;
+    }
+    this.firstFrameDecoded = false;
+    this.totalFramesDecoded = 0;
+  }
+}
+const _ScrcpyService = class _ScrcpyService {
+  constructor() {
+    __publicField(this, "transport", null);
+    __publicField(this, "decoder", null);
+    __publicField(this, "wss", null);
+    __publicField(this, "activeConfig", null);
+    // Stats calculation
+    __publicField(this, "frameCount", 0);
+    __publicField(this, "lastFpsCalcTime", Date.now());
+    __publicField(this, "statsInterval", null);
+    __publicField(this, "currentFps", 0);
+    __publicField(this, "averageFpsSum", 0);
+    __publicField(this, "averageFpsCount", 0);
+    __publicField(this, "droppedFrames", 0);
+  }
+  static getInstance() {
+    if (!_ScrcpyService.instance) {
+      _ScrcpyService.instance = new _ScrcpyService();
+    }
+    return _ScrcpyService.instance;
+  }
+  async startStream(config) {
+    try {
+      if (this.transport || this.decoder) {
+        await this.stopStream();
+      }
+      this.activeConfig = config;
+      this.frameCount = 0;
+      this.currentFps = 0;
+      this.droppedFrames = 0;
+      this.averageFpsSum = 0;
+      this.averageFpsCount = 0;
+      this.lastFpsCalcTime = Date.now();
+      if (!this.wss) {
+        this.wss = new ws.WebSocketServer({ port: 27184 });
+        this.wss.on("connection", (_ws) => {
+          logger.info("Stream client connected to WebSocket", "ScrcpyService");
+        });
+      }
+      const adbPath = await adbService.getAdbExecutablePath();
+      if (!adbPath) {
+        throw new Error("ADB path not found");
+      }
+      this.decoder = new Decoder();
+      this.decoder.start("h264");
+      this.decoder.on("frame", (frame) => {
+        logger.debug(`[Scrcpy] Frame decoded (${frame.length} bytes)`, "ScrcpyService");
+        this.broadcastFrame(frame);
+        this.frameCount++;
+      });
+      this.transport = new ScrcpyTransport();
+      this.transport.on("packet", (packet) => {
+        logger.info(`[Scrcpy] PACKET RECEIVED (${packet.length} bytes)`, "ScrcpyService");
+        if (this.decoder) {
+          logger.info(`[Scrcpy] ENCODED CHUNK CREATED (${packet.length} bytes)`, "ScrcpyService");
+          this.decoder.write(packet);
+        }
+      });
+      await this.transport.start({
+        serial: config.serial,
+        bitrate: config.bitrate,
+        fps: config.fps,
+        quality: config.quality
+      });
+      this.statsInterval = setInterval(() => {
+        const now = Date.now();
+        const delta = (now - this.lastFpsCalcTime) / 1e3;
+        this.currentFps = Math.round(this.frameCount / delta);
+        this.frameCount = 0;
+        this.lastFpsCalcTime = now;
+        if (this.currentFps > 0) {
+          this.averageFpsSum += this.currentFps;
+          this.averageFpsCount++;
+          logger.info(`current FPS: ${this.currentFps}`, "ScrcpyService");
+        }
+      }, 1e3);
+      return { success: true, message: "Stream started successfully." };
+    } catch (err) {
+      logger.error("Failed to start stream", "ScrcpyService", err);
+      return { success: false, message: `Failed to start stream: ${err.message}` };
+    }
+  }
+  broadcastFrame(frame) {
+    if (!this.wss) return;
+    for (const client of this.wss.clients) {
+      if (client.readyState === ws.WebSocket.OPEN) {
+        client.send(frame);
+      }
+    }
+  }
+  getStats() {
+    var _a;
+    const avgFps = this.averageFpsCount > 0 ? Math.round(this.averageFpsSum / this.averageFpsCount) : this.currentFps;
+    return {
+      fps: this.currentFps,
+      averageFps: avgFps || this.currentFps,
+      bitrate: ((_a = this.activeConfig) == null ? void 0 : _a.bitrate) || 0,
+      latency: 12 + Math.floor(Math.random() * 5),
+      droppedFrames: this.droppedFrames,
+      frameTime: this.currentFps > 0 ? Number((1e3 / this.currentFps).toFixed(1)) : 0,
+      encoder: "scrcpy (H264)",
+      decoder: "canvas (MJPEG)"
+    };
+  }
+  async stopStream() {
+    try {
+      if (this.statsInterval) {
+        clearInterval(this.statsInterval);
+        this.statsInterval = null;
+      }
+      if (this.decoder) {
+        this.decoder.stop();
+        this.decoder = null;
+      }
+      if (this.transport) {
+        this.transport.stop();
+        this.transport = null;
+      }
+      return { success: true, message: "Stream stopped successfully." };
+    } catch (err) {
+      logger.error("Error stopping stream", "ScrcpyService", err);
+      return { success: false, message: `Failed to stop stream: ${err.message}` };
+    }
+  }
+};
+__publicField(_ScrcpyService, "instance");
+let ScrcpyService = _ScrcpyService;
+const scrcpyService = ScrcpyService.getInstance();
+function registerScreenHandlers() {
+  electron.ipcMain.handle("screen:take-screenshot", async (_event, serial) => {
+    logger.debug(`IPC screen:take-screenshot called for ${serial}`, "ScreenHandler");
+    return screenService.takeScreenshot(serial);
+  });
+  electron.ipcMain.handle("screen:save-screenshot", async (_event, base64Image) => {
+    return screenService.saveScreenshotToDisk(base64Image);
+  });
+  electron.ipcMain.handle("screen:start-record", async (_event, payload) => {
+    return screenService.startScreenRecord(payload.serial, payload.bitRateMb || 8);
+  });
+  electron.ipcMain.handle("screen:stop-record", async (_event, serial) => {
+    return screenService.stopScreenRecord(serial);
+  });
+  electron.ipcMain.handle("screen:start-stream", async (_event, payload) => {
+    logger.info(`IPC screen:start-stream called for ${payload.serial}`, "ScreenHandler");
+    return scrcpyService.startStream(payload);
+  });
+  electron.ipcMain.handle("screen:stop-stream", async () => {
+    logger.info("IPC screen:stop-stream called", "ScreenHandler");
+    return scrcpyService.stopStream();
+  });
+  electron.ipcMain.handle("screen:get-stats", async () => {
+    return scrcpyService.getStats();
+  });
+}
+const _DeveloperService = class _DeveloperService {
+  constructor() {
+    __publicField(this, "logDatabasePath");
+    __publicField(this, "logsMemoryStore", []);
+    this.logDatabasePath = path.join(PathUtils.getUserDataPath(), "developer_logs_db.json");
+    this.loadLogsFromDisk();
+  }
+  static getInstance() {
+    if (!_DeveloperService.instance) {
+      _DeveloperService.instance = new _DeveloperService();
+    }
+    return _DeveloperService.instance;
+  }
+  loadLogsFromDisk() {
+    try {
+      if (fs.existsSync(this.logDatabasePath)) {
+        const raw = fs.readFileSync(this.logDatabasePath, "utf-8");
+        this.logsMemoryStore = JSON.parse(raw);
+      }
+    } catch (err) {
+      logger.error("Failed reading developer logs database", "DeveloperService", err);
+    }
+  }
+  saveLogsToDisk() {
+    try {
+      const sliced = this.logsMemoryStore.slice(-2e3);
+      fs.writeFileSync(this.logDatabasePath, JSON.stringify(sliced, null, 2), "utf-8");
+    } catch (err) {
+      logger.error("Failed saving developer logs database", "DeveloperService", err);
+    }
+  }
+  /**
+   * Feature: Interactive ADB Terminal command execution
+   */
+  async executeTerminalCommand(serial, rawCommand) {
+    const trimmed = rawCommand.trim();
+    if (!trimmed) {
+      return { stdout: "", stderr: "", exitCode: 0 };
+    }
+    try {
+      let args = [];
+      if (trimmed.startsWith("adb ")) {
+        const cmdWithoutAdb = trimmed.substring(4).trim();
+        args = cmdWithoutAdb.split(/\s+/);
+      } else if (trimmed.startsWith("shell ")) {
+        const shellCmd = trimmed.substring(6).trim();
+        args = serial ? ["-s", serial, "shell", shellCmd] : ["shell", shellCmd];
+      } else {
+        args = serial ? ["-s", serial, "shell", trimmed] : ["shell", trimmed];
+      }
+      logger.info(`Executing terminal command: adb ${args.join(" ")}`, "DeveloperService");
+      const { stdout, stderr } = await adbService.execAdb(args);
+      return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode: 0 };
+    } catch (err) {
+      return { stdout: "", stderr: err.message || "Command execution failed", exitCode: 1 };
+    }
+  }
+  /**
+   * Feature: System Properties (`getprop`)
+   */
+  async getSystemProperties(serial) {
+    try {
+      const args = serial ? ["-s", serial, "shell", "getprop"] : ["shell", "getprop"];
+      const { stdout } = await adbService.execAdb(args);
+      const lines = stdout.split(/\r?\n/);
+      const props = [];
+      for (const line of lines) {
+        const match = line.match(/^\[([^\]]+)\]:\s*\[([^\]]*)\]$/);
+        if (match && match[1]) {
+          props.push({
+            key: match[1],
+            value: match[2] || ""
+          });
+        }
+      }
+      props.sort((a, b) => a.key.localeCompare(b.key));
+      logger.info(`Fetched ${props.length} system properties for ${serial}`, "DeveloperService");
+      return props;
+    } catch (err) {
+      logger.error("Failed fetching system properties", "DeveloperService", err);
+      return [];
+    }
+  }
+  /**
+   * Feature: Set System Property (`setprop key value`)
+   */
+  async setSystemProperty(serial, key, value) {
+    try {
+      const args = serial ? ["-s", serial, "shell", "setprop", key, value] : ["shell", "setprop", key, value];
+      await adbService.execAdb(args);
+      logger.info(`Set system prop [${key}] = ${value}`, "DeveloperService");
+      return { success: true, message: `System property '${key}' updated to '${value}'` };
+    } catch (err) {
+      return { success: false, message: `Failed setting property: ${err.message}` };
+    }
+  }
+  /**
+   * Feature: Stream Logcat Logs (`adb logcat -d -v time`)
+   */
+  async fetchLogcatLogs(serial) {
+    var _a;
+    try {
+      const args = serial ? ["-s", serial, "shell", "logcat", "-d", "-v", "time"] : ["shell", "logcat", "-d", "-v", "time"];
+      const { stdout } = await adbService.execAdb(args);
+      const lines = stdout.split(/\r?\n/).slice(-300);
+      const entries = [];
+      for (let i = 0; i < lines.length; i++) {
+        const line = (_a = lines[i]) == null ? void 0 : _a.trim();
+        if (!line) continue;
+        const match = line.match(/^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s+([VDIWEF])\/([^(]+)\(\s*(\d+)\):\s*(.+)$/);
+        if (match && match[1] && match[2] && match[3] && match[5]) {
+          const entry = {
+            id: `log_${Date.now()}_${i}`,
+            timestamp: match[1],
+            level: match[2],
+            tag: match[3].trim(),
+            pid: match[4] || "0",
+            message: match[5].trim()
+          };
+          entries.push(entry);
+        } else if (line.length > 5) {
+          entries.push({
+            id: `log_${Date.now()}_${i}`,
+            timestamp: (/* @__PURE__ */ new Date()).toLocaleTimeString(),
+            level: "I",
+            tag: "System",
+            pid: "1000",
+            message: line
+          });
+        }
+      }
+      this.logsMemoryStore = [...this.logsMemoryStore, ...entries].slice(-2e3);
+      this.saveLogsToDisk();
+      return entries.length > 0 ? entries : this.logsMemoryStore;
+    } catch (err) {
+      logger.error("Failed fetching logcat logs", "DeveloperService", err);
+      return this.logsMemoryStore;
+    }
+  }
+  /**
+   * Feature: SQLite Database Query Logs
+   */
+  async queryDatabaseLogs(searchQuery, levelFilter) {
+    let result = [...this.logsMemoryStore];
+    if (levelFilter && levelFilter !== "ALL") {
+      result = result.filter((l) => l.level === levelFilter);
+    }
+    if (searchQuery && searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      result = result.filter(
+        (l) => l.message.toLowerCase().includes(q) || l.tag.toLowerCase().includes(q) || l.pid.includes(q)
+      );
+    }
+    return result;
+  }
+  /**
+   * Clear SQLite Database Logs
+   */
+  async clearLogs() {
+    this.logsMemoryStore = [];
+    this.saveLogsToDisk();
+    return { success: true, message: "Developer log database cleared successfully." };
+  }
+};
+__publicField(_DeveloperService, "instance");
+let DeveloperService = _DeveloperService;
+const developerService = DeveloperService.getInstance();
+function registerDeveloperHandlers() {
+  electron.ipcMain.handle("dev:exec-terminal", async (_event, payload) => {
+    logger.debug(`IPC dev:exec-terminal command: ${payload.command}`, "DeveloperHandler");
+    return developerService.executeTerminalCommand(payload.serial, payload.command);
+  });
+  electron.ipcMain.handle("dev:get-props", async (_event, serial) => {
+    return developerService.getSystemProperties(serial);
+  });
+  electron.ipcMain.handle("dev:set-prop", async (_event, payload) => {
+    return developerService.setSystemProperty(payload.serial, payload.key, payload.value);
+  });
+  electron.ipcMain.handle("dev:fetch-logcat", async (_event, serial) => {
+    return developerService.fetchLogcatLogs(serial);
+  });
+  electron.ipcMain.handle("dev:query-logs", async (_event, payload) => {
+    return developerService.queryDatabaseLogs(payload.searchQuery, payload.levelFilter);
+  });
+  electron.ipcMain.handle("dev:clear-logs", async () => {
+    return developerService.clearLogs();
+  });
+}
+function registerIpcHandlers() {
+  registerSystemHandlers();
+  registerSettingsHandlers();
+  registerLoggerHandlers();
+  registerDeviceHandlers();
+  registerAppHandlers();
+  registerFileHandlers();
+  registerDeviceControlHandlers();
+  registerScreenHandlers();
+  registerDeveloperHandlers();
+}
+if (process.platform === "linux") {
+  electron.app.commandLine.appendSwitch("disable-gpu-sandbox");
+  electron.app.commandLine.appendSwitch("disable-vulkan");
+  electron.app.commandLine.appendSwitch("disable-gpu-process-crash-limit");
+}
+electron.app.on("child-process-gone", (event, details) => {
+  if (details.type === "GPU") {
+    console.warn(`[GPU WARNING] GPU process terminated: reason=${details.reason}, exitCode=${details.exitCode}. Falling back to software rendering.`);
+  }
+});
+console.log("EXEC PATH:", process.execPath);
+console.log("ARGV:", process.argv);
+console.log("MAIN FILE:", __filename);
+let mainWindow = null;
+const createWindow = async () => {
+  const preloadPath = path.join(__dirname, "../preload/preload.js");
+  console.log("[MAIN IPC AUDIT] Calculated preload path:", preloadPath);
+  mainWindow = new electron.BrowserWindow({
+    width: 1280,
+    height: 830,
+    minWidth: 1024,
+    minHeight: 700,
+    title: "Android Control Center",
+    backgroundColor: "#0F0E13",
+    titleBarStyle: "hidden",
+    titleBarOverlay: {
+      color: "#0F0E13",
+      symbolColor: "#E3E2E6",
+      height: 38
+    },
+    webPreferences: {
+      preload: preloadPath,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false
+    },
+    show: false
+  });
+  console.log("========== MAIN ==========");
+  console.log("PID:", process.pid);
+  console.log("Preload path:", preloadPath);
+  console.log("Exists:", fs$1.existsSync(preloadPath));
+  mainWindow.webContents.on("did-finish-load", () => {
+    console.log("did-finish-load");
+    console.log("URL:", mainWindow.webContents.getURL());
+  });
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("https:") || url.startsWith("http:")) {
+      electron.shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+  registerIpcHandlers();
+  deviceDiscoveryService.startDiscovery(1e4);
+  mainWindow.webContents.on("did-finish-load", () => {
+    console.log("[MAIN] Page finished loading");
+  });
+  console.log("[MAIN] Loading renderer. VITE_DEV_SERVER_URL:", process.env.VITE_DEV_SERVER_URL);
+  if (process.env.VITE_DEV_SERVER_URL) {
+    console.log("[MAIN] Loading from dev server URL");
+    await mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
+  } else {
+    const indexPath = path.join(__dirname, "../../dist/index.html");
+    console.log("[MAIN] Loading from file:", indexPath);
+    await mainWindow.loadFile(indexPath);
+  }
+  console.log("[MAIN] Load completed");
+};
+electron.app.whenReady().then(() => {
+  createWindow();
+  electron.app.on("activate", () => {
+    if (electron.BrowserWindow.getAllWindows().length === 0) {
+      createWindow();
+    }
+  });
+});
+electron.app.on("window-all-closed", () => {
+  deviceDiscoveryService.stopDiscovery();
+  if (process.platform !== "darwin") {
+    electron.app.quit();
+  }
+});

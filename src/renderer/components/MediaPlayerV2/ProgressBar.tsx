@@ -1,14 +1,19 @@
 import React from 'react';
-import { formatTime } from './utils';
+import { calculateProgress, formatTime, normalizeTimeMs } from './utils';
 
 interface ProgressBarProps {
   position: number;
   duration: number;
-  progressPercent: number;
+  progressPercent?: number;
 }
 
-export const ProgressBar: React.FC<ProgressBarProps> = ({ position, duration, progressPercent }) => {
-  const safePercent = Math.min(100, Math.max(0, Number.isFinite(progressPercent) ? progressPercent : 0));
+export const ProgressBar: React.FC<ProgressBarProps> = ({ position, duration }) => {
+  const normDur = normalizeTimeMs(duration);
+  const rawPos = normalizeTimeMs(position);
+
+  // Clamp position to duration if duration is known (> 0)
+  const normPos = normDur > 0 ? Math.min(normDur, Math.max(0, rawPos)) : Math.max(0, rawPos);
+  const safePercent = normDur > 0 ? calculateProgress(normPos, normDur) : 0;
 
   return (
     <div className="space-y-1.5">
@@ -19,8 +24,8 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ position, duration, pr
         />
       </div>
       <div className="flex justify-between font-mono text-xs text-white/70">
-        <span>{formatTime(position)}</span>
-        <span>{formatTime(duration, true)}</span>
+        <span>{formatTime(normPos)}</span>
+        <span>{formatTime(normDur, true)}</span>
       </div>
     </div>
   );

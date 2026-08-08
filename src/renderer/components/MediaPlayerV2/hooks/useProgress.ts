@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { calculateProgress } from '../utils';
+import { calculateProgress, normalizeTimeMs } from '../utils';
 
 export function useProgress(
   position: number,
@@ -8,8 +8,11 @@ export function useProgress(
   playbackSpeed: number = 1.0,
   trackId?: string
 ) {
-  const [displayPosition, setDisplayPosition] = useState(position);
-  const lastPositionRef = useRef(position);
+  const normPos = normalizeTimeMs(position);
+  const normDur = normalizeTimeMs(duration);
+
+  const [displayPosition, setDisplayPosition] = useState(normPos);
+  const lastPositionRef = useRef(normPos);
   const lastSyncTimeRef = useRef(performance.now());
   const prevTrackIdRef = useRef(trackId);
 
@@ -18,9 +21,10 @@ export function useProgress(
   // Synchronize position anchor with Android whenever position, playbackState, or trackId changes
   useEffect(() => {
     prevTrackIdRef.current = trackId;
-    lastPositionRef.current = Math.max(0, position);
+    const freshPos = normalizeTimeMs(position);
+    lastPositionRef.current = freshPos;
     lastSyncTimeRef.current = performance.now();
-    setDisplayPosition(lastPositionRef.current);
+    setDisplayPosition(freshPos);
   }, [position, playbackState, trackId]);
 
   // Animate locally using requestAnimationFrame
@@ -31,16 +35,16 @@ export function useProgress(
     const tick = () => {
       const elapsed = (performance.now() - lastSyncTimeRef.current) * playbackSpeed;
       const rawPos = lastPositionRef.current + elapsed;
-      const currentPos = duration > 0 ? Math.min(duration, Math.max(0, rawPos)) : Math.max(0, rawPos);
+      const currentPos = normDur > 0 ? Math.min(normDur, Math.max(0, rawPos)) : Math.max(0, rawPos);
       setDisplayPosition(currentPos);
       frameId = requestAnimationFrame(tick);
     };
 
     frameId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frameId);
-  }, [isPlaying, duration, playbackSpeed]);
+  }, [isPlaying, normDur, playbackSpeed]);
 
-  const progressPercent = calculateProgress(displayPosition, duration);
+  const progressPercent = calculateProgress(displayPosition, normDur);
 
   return {
     displayPosition,

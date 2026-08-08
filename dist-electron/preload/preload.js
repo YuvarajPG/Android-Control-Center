@@ -1,1 +1,24 @@
-"use strict";const n=require("electron");try{n.contextBridge.exposeInMainWorld("electron",{ipcRenderer:{send(e,r){n.ipcRenderer.send(e,r)},on(e,r){const o=(i,...t)=>r(...t);return n.ipcRenderer.on(e,o),()=>{n.ipcRenderer.removeListener(e,o)}},invoke(e,r){return n.ipcRenderer.invoke(e,r)}},platform:process.platform})}catch(e){console.error("[PRELOAD] Error during exposeInMainWorld:",e)}
+"use strict";
+const electron = require("electron");
+try {
+  electron.contextBridge.exposeInMainWorld("electron", {
+    ipcRenderer: {
+      send(channel, data) {
+        electron.ipcRenderer.send(channel, data);
+      },
+      on(channel, func) {
+        const subscription = (_event, ...args) => func(...args);
+        electron.ipcRenderer.on(channel, subscription);
+        return () => {
+          electron.ipcRenderer.removeListener(channel, subscription);
+        };
+      },
+      invoke(channel, data) {
+        return electron.ipcRenderer.invoke(channel, data);
+      }
+    },
+    platform: process.platform
+  });
+} catch (e) {
+  console.error("[PRELOAD] Error during exposeInMainWorld:", e);
+}
