@@ -333,7 +333,7 @@ export const DevicesFeature: React.FC = () => {
                           onClick={async () => {
                             console.log(`[UI] Connect clicked: ${device.serial}`);
                             const targetIp = device.ipAddress || (device.serial?.includes(':') ? device.serial.split(':')[0] : undefined);
-                            const targetPort = device.port || (device.serial?.includes(':') ? parseInt(device.serial.split(':')[1], 10) : 5555);
+                            const targetPort = device.port || (device.serial?.includes(':') ? parseInt(device.serial.split(':')[1] || '5555', 10) : 5555);
 
                             if (targetIp && targetPort) {
                               addToast('info', `Connecting to ${device.name || device.model} (${targetIp}:${targetPort})...`);
