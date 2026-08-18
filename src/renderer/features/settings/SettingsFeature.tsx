@@ -266,7 +266,7 @@ export const SettingsFeature: React.FC = () => {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
             <div className="p-3 bg-m3-surface-2 rounded-m3-md border border-m3-surface-4 text-center">
               <span className="text-m3-on-surface-variant block mb-1">App Version</span>
-              <span className="text-m3-primary font-bold">{appInfo?.appVersion || 'v1.0.0'}</span>
+              <span className="text-m3-primary font-bold">{appInfo?.appVersion || 'Beta'}</span>
             </div>
             <div className="p-3 bg-m3-surface-2 rounded-m3-md border border-m3-surface-4 text-center">
               <span className="text-m3-on-surface-variant block mb-1">Electron</span>

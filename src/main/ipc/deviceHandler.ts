@@ -77,72 +77,58 @@ export function registerDeviceHandlers(): void {
     }
   });
 
-  // Forget a device: full reset, transport disconnect, cache invalidation, and trusted removal
-  ipcMain.handle('device:forget-trusted', async (_event, serial: string) => {
+  const handleForgetDevice = async (serial: string) => {
     logger.info(`[MAIN] Forget requested: ${serial}`, 'DeviceHandler');
     const cachedDevs = deviceDiscoveryService.getCachedDevices();
-    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
-    const targetName = dev?.deviceName || dev?.model || serial;
+    const cleanSerialIp = serial.includes(':') ? serial.split(':')[0] : serial;
 
-    // 1. Disconnect wireless ADB transports if present
+    const dev = cachedDevs.find(
+      (d) =>
+        d.serialNumber === serial ||
+        d.hardwareSerial === serial ||
+        d.id === serial ||
+        (cleanSerialIp && d.ipAddress === cleanSerialIp),
+    );
+    const targetName = dev?.deviceName || dev?.model || serial;
+    const targetIp = dev?.ipAddress || cleanSerialIp;
+
+    // 1. Disconnect all wireless ADB transports and IP addresses associated with this device
     if (dev?.availableTransports) {
       for (const t of dev.availableTransports) {
         if (t.type === 'wireless' || t.serial.includes(':')) {
           await adbService.disconnect(t.serial);
         }
       }
-    } else if (serial.includes(':')) {
+    }
+    if (serial.includes(':')) {
       await adbService.disconnect(serial);
     }
+    if (targetIp && targetIp !== serial) {
+      await adbService.disconnect(targetIp);
+    }
 
-    // 2. Invalidate device caches & suppress auto-activation
+    // 2. Invalidate device caches & suppress auto-activation across all identifiers
     adbService.invalidateStaticDeviceCache(serial);
     if (dev?.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
+    if (targetIp) adbService.invalidateStaticDeviceCache(targetIp);
+
     deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+    if (targetIp) deviceDiscoveryService.suppressDevice(targetIp);
+    if (dev?.id) deviceDiscoveryService.suppressDevice(dev.id);
 
     // 3. Remove from persistent trusted storage
     const wasRemoved = trustedDevicesService.removeDevice(serial);
 
-    // 4. Refresh discovery
+    // 4. Force rescan and update UI
     const updated = await deviceDiscoveryService.scanDevices(true);
     ElectronUtils.sendToRenderer('device:list-updated', updated);
 
     logger.info(`[MAIN] Forget result: success for ${targetName}`, 'DeviceHandler');
     return { success: true, wasRemoved, deviceName: targetName, devices: updated };
-  });
+  };
 
-  ipcMain.handle('device:forget', async (_event, serial: string) => {
-    logger.info(`[MAIN] Forget requested: ${serial}`, 'DeviceHandler');
-    const cachedDevs = deviceDiscoveryService.getCachedDevices();
-    const dev = cachedDevs.find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
-    const targetName = dev?.deviceName || dev?.model || serial;
-
-    // 1. Disconnect wireless ADB transports if present
-    if (dev?.availableTransports) {
-      for (const t of dev.availableTransports) {
-        if (t.type === 'wireless' || t.serial.includes(':')) {
-          await adbService.disconnect(t.serial);
-        }
-      }
-    } else if (serial.includes(':')) {
-      await adbService.disconnect(serial);
-    }
-
-    // 2. Invalidate device caches & suppress auto-activation
-    adbService.invalidateStaticDeviceCache(serial);
-    if (dev?.hardwareSerial) adbService.invalidateStaticDeviceCache(dev.hardwareSerial);
-    deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
-
-    // 3. Remove from persistent trusted storage
-    const wasRemoved = trustedDevicesService.removeDevice(serial);
-
-    // 4. Refresh discovery
-    const updated = await deviceDiscoveryService.scanDevices(true);
-    ElectronUtils.sendToRenderer('device:list-updated', updated);
-
-    logger.info(`[MAIN] Forget result: success for ${targetName}`, 'DeviceHandler');
-    return { success: true, wasRemoved, deviceName: targetName, devices: updated };
-  });
+  ipcMain.handle('device:forget-trusted', async (_event, serial: string) => handleForgetDevice(serial));
+  ipcMain.handle('device:forget', async (_event, serial: string) => handleForgetDevice(serial));
 
   // List trusted devices
   ipcMain.handle('device:list-trusted', async () => {
@@ -247,16 +233,50 @@ export function registerDeviceHandlers(): void {
 
   ipcMain.handle('adb:disconnect', async (_event, serial?: string) => {
     logger.info(`[MAIN] adb:disconnect received for ${serial || 'all'}`, 'DeviceHandler');
-    if (serial) {
-      const dev = deviceDiscoveryService.getCachedDevices().find((d) => d.serialNumber === serial || d.hardwareSerial === serial || d.id === serial);
-      deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
-    } else {
+    if (!serial) {
       deviceDiscoveryService.suppressDevice();
+      const res = await adbService.disconnect();
+      const updated = await deviceDiscoveryService.scanDevices(true);
+      ElectronUtils.sendToRenderer('device:list-updated', updated);
+      return res;
     }
-    const res = await adbService.disconnect(serial);
+
+    const cachedDevs = deviceDiscoveryService.getCachedDevices();
+    const dev = cachedDevs.find(
+      (d) =>
+        d.serialNumber === serial ||
+        d.hardwareSerial === serial ||
+        d.id === serial ||
+        (d.ipAddress && serial.includes(d.ipAddress)),
+    );
+
+    // Suppress background auto-reconnect loops so the device STAYS disconnected
+    deviceDiscoveryService.suppressDevice(serial, dev?.hardwareSerial);
+
+    const endpointsToDisconnect = new Set<string>();
+    if (serial.includes(':')) endpointsToDisconnect.add(serial);
+    if (dev?.ipAddress && dev?.port) endpointsToDisconnect.add(`${dev.ipAddress}:${dev.port}`);
+
+    if (dev?.availableTransports) {
+      for (const t of dev.availableTransports) {
+        if (t.type === 'wireless' || t.serial.includes(':')) {
+          endpointsToDisconnect.add(t.serial);
+        }
+      }
+    }
+
+    if (endpointsToDisconnect.size === 0) {
+      endpointsToDisconnect.add(serial);
+    }
+
+    for (const ep of endpointsToDisconnect) {
+      logger.info(`[MAIN] Executing ADB disconnect for endpoint: ${ep}`, 'DeviceHandler');
+      await adbService.disconnect(ep);
+    }
+
     const updated = await deviceDiscoveryService.scanDevices(true);
     ElectronUtils.sendToRenderer('device:list-updated', updated);
-    return res;
+    return { success: true };
   });
 
   // Feature: adb kill-server

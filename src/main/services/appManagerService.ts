@@ -46,7 +46,7 @@ function parsePackageFlagsFromDumpsys(dumpsysOutput: string): Map<string, Packag
     const isSystem = flagsStr.includes('SYSTEM') || flagsStr.includes('UPDATED_SYSTEM_APP');
 
     const verNameMatch = block.match(/versionName=([^\s\r\n]+)/i);
-    const versionName = verNameMatch ? verNameMatch[1] : '1.0.0';
+    const versionName = verNameMatch ? verNameMatch[1] : 'Beta';
 
     const codePathMatch = block.match(/codePath=([^\s\r\n]+)/i);
     const codePath = codePathMatch ? codePathMatch[1] : '';
@@ -230,7 +230,7 @@ export class AppManagerService {
       const pkgParts = packageName.split('.');
       const rawName = pkgParts[pkgParts.length - 1] || packageName;
       const label = rawName.charAt(0).toUpperCase() + rawName.slice(1).replace(/_/g, ' ');
-      const versionName = flagInfo?.versionName || '1.0.0';
+      const versionName = flagInfo?.versionName || 'Beta';
 
       apps.push({
         id: packageName,

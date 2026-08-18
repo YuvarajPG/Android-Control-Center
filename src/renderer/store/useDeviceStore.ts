@@ -146,23 +146,44 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   forgetDevice: async (serial: string): Promise<boolean> => {
     if (!serial || inFlightForgets.has(serial)) return false;
     inFlightForgets.add(serial);
+
+    // 1. Immediate optimistic UI removal from Zustand state
+    const current = get().devices;
+    const cleanSerialIp = serial.includes(':') ? serial.split(':')[0] : serial;
+    const remaining = current.filter(
+      (d) =>
+        d.id !== serial &&
+        d.serial !== serial &&
+        d.hardwareSerial !== serial &&
+        (d as any).serialNumber !== serial &&
+        d.ipAddress !== serial &&
+        (cleanSerialIp ? d.ipAddress !== cleanSerialIp : true) &&
+        !d.availableTransports?.some((t) => t.serial === serial),
+    );
+
+    const currentSelectedId = get().selectedDeviceId;
+    const targetWasSelected = current.some(
+      (d) =>
+        d.id === currentSelectedId &&
+        (d.id === serial || d.serial === serial || d.hardwareSerial === serial || (d as any).serialNumber === serial),
+    );
+    const nextSelectedId = targetWasSelected
+      ? remaining.find((d) => d.status === 'online')?.id || null
+      : currentSelectedId;
+
+    set({ devices: remaining, selectedDeviceId: nextSelectedId });
+
     try {
       console.log(`[IPC -> MAIN] device:forget: ${serial}`);
-      const res = await ipcService.invoke<{ success: boolean; wasRemoved: boolean; deviceName?: string; devices: any[] }>('device:forget', serial);
+      const res = await ipcService.invoke<{ success: boolean; wasRemoved: boolean; deviceName?: string; devices: any[] }>(
+        'device:forget',
+        serial,
+      );
       if (res && Array.isArray(res.devices)) {
         const formatted = res.devices.map(formatDevice);
-        const currentSelectedId = get().selectedDeviceId;
-        const currentSelected = get().devices.find((d) => d.id === currentSelectedId);
-
-        let nextSelectedId = currentSelectedId;
-        if (currentSelected && (currentSelected.serial === serial || currentSelected.hardwareSerial === serial || currentSelected.id === serial)) {
-          const remainingOnline = formatted.find((d) => d.status === 'online');
-          nextSelectedId = remainingOnline?.id || null;
-        }
-
-        set({ devices: formatted, selectedDeviceId: nextSelectedId });
+        set({ devices: formatted });
       }
-      return Boolean(res?.wasRemoved);
+      return true;
     } catch {
       return false;
     } finally {
@@ -171,14 +192,32 @@ export const useDeviceStore = create<DeviceState>((set, get) => ({
   },
 
   setPreferredTransport: async (deviceId: string, transport: 'usb' | 'wireless') => {
+    // 1. Immediate optimistic UI update
+    const current = get().devices;
+    const optimistic = current.map((dev) => {
+      if (dev.id === deviceId || dev.hardwareSerial === deviceId || dev.serial === deviceId) {
+        const targetTransport = dev.availableTransports?.find((t) => t.type === transport);
+        return {
+          ...dev,
+          preferredTransport: transport,
+          connectionType: transport,
+          serial: targetTransport?.serial || dev.serial,
+          serialNumber: targetTransport?.serial || dev.serialNumber,
+        };
+      }
+      return dev;
+    });
+    set({ devices: optimistic });
+
+    // 2. Persist in backend
     try {
       const list = await ipcService.adb.setPreferredTransport(deviceId, transport);
       if (Array.isArray(list)) {
         const formatted = list.map(formatDevice);
         set({ devices: formatted });
       }
-    } catch {
-      // ignore error
+    } catch (err) {
+      console.error('Failed to set preferred transport', err);
     }
   },
 }));

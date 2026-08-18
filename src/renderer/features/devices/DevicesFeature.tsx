@@ -34,46 +34,11 @@ export interface DeviceActionConfig {
 
 export function resolveDeviceActions(device: AndroidDevice): DeviceActionConfig {
   const isOnline = device.status === 'online';
-  const isUsb = device.connectionType === 'usb' || (!device.serial?.includes(':') && !device.ipAddress);
-  const isWireless = device.connectionType === 'wireless' || Boolean(device.serial?.includes(':') || device.ipAddress);
-  const isRemembered = Boolean(device.isTrusted);
-
-  if (isUsb && isOnline) {
-    return {
-      showConnect: false,
-      showDisconnect: true,
-      showForget: false,
-    };
-  }
-
-  if (isUsb && !isOnline) {
-    return {
-      showConnect: true,
-      showDisconnect: false,
-      showForget: true,
-    };
-  }
-
-  if (isWireless && isOnline) {
-    return {
-      showConnect: false,
-      showDisconnect: true,
-      showForget: true,
-    };
-  }
-
-  if (isWireless && !isOnline) {
-    return {
-      showConnect: true,
-      showDisconnect: false,
-      showForget: isRemembered,
-    };
-  }
 
   return {
     showConnect: !isOnline,
     showDisconnect: isOnline,
-    showForget: isRemembered && !isOnline,
+    showForget: true,
   };
 }
 
@@ -108,17 +73,17 @@ export const DevicesFeature: React.FC = () => {
   const handleConfirmForget = async () => {
     if (!deviceToForget || isForgetExecuting) return;
     setIsForgetExecuting(true);
-    const targetSerial = deviceToForget.serial;
+    const targetSerial = deviceToForget.hardwareSerial || (deviceToForget as any).serialNumber || deviceToForget.serial || deviceToForget.id;
     const targetName = deviceToForget.name || deviceToForget.deviceName || deviceToForget.model || targetSerial;
 
     console.log(`[UI] Confirming Forget for: ${targetSerial}`);
     try {
       const wasRemoved = await forgetDevice(targetSerial);
       if (wasRemoved) {
-        addToast('info', `Forgot ${targetName}`);
+        addToast('info', `Removed ${targetName}`);
       }
     } catch (err: any) {
-      addToast('error', `Failed forgetting device: ${err.message}`);
+      addToast('error', `Failed deleting device: ${err.message}`);
     } finally {
       setIsForgetExecuting(false);
       setDeviceToForget(null);
@@ -282,36 +247,46 @@ export const DevicesFeature: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Transport Preference Switcher */}
-                  {availableTransports.length > 1 && (
-                    <div className="flex items-center justify-between pt-1">
-                      <span className="text-[11px] text-m3-on-surface-variant">Preferred transport:</span>
-                      <div className="flex items-center gap-1 bg-m3-surface-3 p-0.5 rounded border border-m3-surface-4">
+                  {/* Transport Preference Switcher / Display */}
+                  <div className="flex items-center justify-between pt-2 border-t border-m3-surface-4/40">
+                    <span className="text-[11px] font-medium text-m3-on-surface-variant">Preferred transport:</span>
+                    <div
+                      className="inline-flex rounded-m3-sm p-0.5 bg-m3-surface-3 border border-m3-surface-4 shadow-inner"
+                      role="group"
+                      aria-label="Preferred transport selector"
+                    >
+                      {availableTransports.some((t) => t.type === 'usb') && (
                         <button
                           type="button"
                           onClick={() => setPreferredTransport(device.id, 'usb')}
-                          className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                          aria-pressed={device.preferredTransport === 'usb'}
+                          className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-m3-xs transition-all duration-150 cursor-pointer ${
                             device.preferredTransport === 'usb'
-                              ? 'bg-m3-primary text-m3-on-primary shadow-xs font-bold'
-                              : 'text-m3-on-surface-variant hover:text-m3-on-surface'
+                              ? 'bg-m3-primary text-m3-on-primary shadow-sm font-bold ring-1 ring-m3-primary/60'
+                              : 'text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-4/50'
                           }`}
                         >
-                          Usb
+                          <Usb className="h-3.5 w-3.5" />
+                          <span>USB</span>
                         </button>
+                      )}
+                      {availableTransports.some((t) => t.type === 'wireless') && (
                         <button
                           type="button"
                           onClick={() => setPreferredTransport(device.id, 'wireless')}
-                          className={`px-2 py-0.5 text-[10px] font-medium rounded transition-all ${
+                          aria-pressed={device.preferredTransport === 'wireless'}
+                          className={`flex items-center gap-1.5 px-3 py-1 text-xs font-semibold rounded-m3-xs transition-all duration-150 cursor-pointer ${
                             device.preferredTransport === 'wireless'
-                              ? 'bg-m3-primary text-m3-on-primary shadow-xs font-bold'
-                              : 'text-m3-on-surface-variant hover:text-m3-on-surface'
+                              ? 'bg-m3-primary text-m3-on-primary shadow-sm font-bold ring-1 ring-m3-primary/60'
+                              : 'text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-4/50'
                           }`}
                         >
-                          Wireless
+                          <Wifi className="h-3.5 w-3.5" />
+                          <span>Wireless</span>
                         </button>
-                      </div>
+                      )}
                     </div>
-                  )}
+                  </div>
 
                   {/* Battery & Storage */}
                   <div className="flex justify-between pt-1">
@@ -357,8 +332,16 @@ export const DevicesFeature: React.FC = () => {
                           icon={<RefreshCw className="h-3.5 w-3.5 text-m3-primary" />}
                           onClick={async () => {
                             console.log(`[UI] Connect clicked: ${device.serial}`);
-                            await ipcService.invoke('device:activate', device.serial);
-                            addToast('info', `Activating ${device.name || device.serial}...`);
+                            const targetIp = device.ipAddress || (device.serial?.includes(':') ? device.serial.split(':')[0] : undefined);
+                            const targetPort = device.port || (device.serial?.includes(':') ? parseInt(device.serial.split(':')[1], 10) : 5555);
+
+                            if (targetIp && targetPort) {
+                              addToast('info', `Connecting to ${device.name || device.model} (${targetIp}:${targetPort})...`);
+                              await ipcService.adb.connect(targetIp, targetPort);
+                            } else {
+                              addToast('info', `Connecting ${device.name || device.serial}...`);
+                            }
+                            await ipcService.invoke('device:rescan');
                           }}
                         >
                           Connect
@@ -372,9 +355,10 @@ export const DevicesFeature: React.FC = () => {
                           size="sm"
                           icon={<Power className="h-3.5 w-3.5 text-m3-warning" />}
                           onClick={async () => {
-                            console.log(`[UI] Disconnect clicked: ${device.serial}`);
-                            await ipcService.adb.disconnect(device.serial);
-                            addToast('warning', `Disconnected ${device.name || device.serial}`);
+                            const targetSerial = device.hardwareSerial || (device as any).serialNumber || device.serial || device.id;
+                            console.log(`[UI] Disconnect clicked for: ${targetSerial}`);
+                            await ipcService.adb.disconnect(targetSerial);
+                            addToast('warning', `Disconnected ${device.name || device.model}`);
                           }}
                         >
                           Disconnect
@@ -382,18 +366,20 @@ export const DevicesFeature: React.FC = () => {
                       </Tooltip>
                     )}
                     {actions.showForget && (
-                      <Tooltip content="Forget Remembered Device" position="top">
+                      <Tooltip content="Delete / Remove Device" position="top">
                         <Button
                           variant="ghost"
                           size="sm"
-                          icon={<Trash2 className="h-3.5 w-3.5 text-m3-on-surface-variant hover:text-m3-error" />}
+                          icon={<Trash2 className="h-3.5 w-3.5 text-m3-error" />}
                           onClick={(e) => {
                             e.stopPropagation();
                             e.preventDefault();
-                            console.log(`[UI] Open Forget Confirmation for: ${device.serial}`);
+                            console.log(`[UI] Open Forget Confirmation for: ${device.serial || device.hardwareSerial || device.id}`);
                             setDeviceToForget(device);
                           }}
-                        />
+                        >
+                          Delete
+                        </Button>
                       </Tooltip>
                     )}
                   </div>

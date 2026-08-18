@@ -46,6 +46,7 @@ export default defineConfig({
       '@main': path.resolve(__dirname, './src/main'),
       '@shared': path.resolve(__dirname, './src/shared'),
     },
+    preserveSymlinks: true,
   },
   server: {
     port: 5173,

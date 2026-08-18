@@ -696,7 +696,7 @@ export const ipcService = {
         return ipcService.invoke<AppVersionInfo>('system:get-app-version');
       }
       return {
-        appVersion: '1.0.0',
+        appVersion: 'Beta',
         appName: 'Android Control Center',
         electronVersion: '33.2.1',
         nodeVersion: '26.5.0',

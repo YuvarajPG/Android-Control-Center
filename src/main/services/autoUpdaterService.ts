@@ -9,7 +9,7 @@ export interface UpdateInfo {
 
 export class AutoUpdaterService {
   private static instance: AutoUpdaterService;
-  private currentVersion: string = '1.0.0';
+  private currentVersion: string = 'Beta';
 
   private constructor() {}
 

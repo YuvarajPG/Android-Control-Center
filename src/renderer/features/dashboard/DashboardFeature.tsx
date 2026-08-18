@@ -563,7 +563,7 @@ export const DashboardFeature: React.FC = () => {
               <p className="text-[11px] text-m3-on-surface-variant/80">
                 TCP/IP Port:{' '}
                 <span className="font-mono text-m3-primary">
-                  {device?.port ?? 'Unknown'}
+                  {device?.port || (device?.serialNumber?.includes(':') ? device.serialNumber.split(':')[1] : (device?.serial?.includes(':') ? device.serial.split(':')[1] : '5555'))}
                 </span>
               </p>
             </Card>
@@ -584,7 +584,7 @@ export const DashboardFeature: React.FC = () => {
               <p className="text-[11px] text-m3-on-surface-variant/80">
                 Transport:{' '}
                 {device?.connectionType
-                  ? `${device.connectionType.toUpperCase()} (${device?.port ?? 5555})`
+                  ? `${device.connectionType.toUpperCase()} (${device?.port || (device?.serialNumber?.includes(':') ? device.serialNumber.split(':')[1] : (device?.serial?.includes(':') ? device.serial.split(':')[1] : '5555'))})`
                   : 'Unknown'}
               </p>
             </Card>
@@ -609,7 +609,7 @@ export const DashboardFeature: React.FC = () => {
                           <span className="font-mono">
                             {ipVisible ? device.ipAddress : '••••••••••••'}
                           </span>
-                          :{device?.port ?? 5555}
+                          :{device?.port || (device?.serialNumber?.includes(':') ? device.serialNumber.split(':')[1] : (device?.serial?.includes(':') ? device.serial.split(':')[1] : '5555'))}
                           <button
                             onClick={() => setIpVisible((v) => !v)}
                             className="ml-1.5 text-m3-on-surface-variant/60 hover:text-m3-primary transition-colors"

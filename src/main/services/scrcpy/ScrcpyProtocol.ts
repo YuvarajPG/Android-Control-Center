@@ -18,8 +18,8 @@ export interface StreamMetadata {
 }
 
 export class ScrcpyDemuxer {
-  private buffer: Buffer = Buffer.alloc(0);
   private headerParsed: boolean = false;
+  private buffer: Buffer = Buffer.alloc(0);
   public metadata: StreamMetadata | null = null;
 
   public parse(
@@ -27,70 +27,53 @@ export class ScrcpyDemuxer {
     onMetadata: (meta: StreamMetadata) => void,
     onFramePayload: (payload: Buffer) => void,
   ): void {
-    // Accumulate incoming TCP stream bytes
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
-    // 1. Parse Stream Header (69 bytes: 1 dummy byte + 64 bytes device name + 4 bytes codec ID)
+    // 1. Strip initial 69-byte device metadata header once
     if (!this.headerParsed) {
       if (this.buffer.length < 69) return;
 
       const deviceName = this.buffer.subarray(1, 65).toString('utf-8').replace(/\0/g, '').trim();
-      const fourCC = this.buffer.readUInt32BE(65);
-      const codec = fourCC === CodecId.H265 ? 'h265' : fourCC === CodecId.AV1 ? 'av1' : 'h264';
-
       this.metadata = {
         deviceName: deviceName || 'Android Device',
         width: 1080,
         height: 2400,
-        codec,
+        codec: 'h264',
       };
-
       this.headerParsed = true;
       this.buffer = this.buffer.subarray(69);
-      logger.info('[Scrcpy] STREAM HEADER COMPLETE', 'ScrcpyDemuxer');
-      logger.info('[Scrcpy] STARTING PACKET LOOP', 'ScrcpyDemuxer');
+      logger.info(`[Scrcpy] 69-byte header stripped (Device: ${deviceName}), framing H264 packets for decoder`, 'ScrcpyDemuxer');
       onMetadata(this.metadata);
     }
 
-    // 2. Parse 4-byte framed packets (4 bytes Packet Size + N bytes Payload)
-    while (true) {
-      // Need at least 4 bytes to read packet length
-      if (this.buffer.length < 4) break;
+    // 2. Parse 12-byte framed scrcpy 2.x video packets: [8 bytes PTS][4 bytes Size][Payload]
+    while (this.buffer.length >= 12) {
+      const packetSize = this.buffer.readUInt32BE(8);
 
-      const packetSize = this.buffer.readUInt32BE(0);
-
-      // Sanity check packet size (max 10MB per NAL unit)
       if (packetSize === 0 || packetSize > 10 * 1024 * 1024) {
-        logger.warn(`[Scrcpy] Invalid packet size: ${packetSize}, searching for resync...`, 'ScrcpyDemuxer');
-        // Search for Annex-B start code (00 00 00 01) to resync
-        const resyncIdx = this.buffer.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]), 1);
-        if (resyncIdx !== -1) {
-          this.buffer = this.buffer.subarray(resyncIdx);
-          continue;
-        } else {
-          // Retain last 3 bytes in case start code is split across TCP chunks
-          this.buffer = this.buffer.subarray(Math.max(0, this.buffer.length - 3));
-          break;
+        const startIdx = this.buffer.indexOf(Buffer.from([0x00, 0x00, 0x00, 0x01]));
+        if (startIdx !== -1) {
+          onFramePayload(this.buffer.subarray(startIdx));
+          this.buffer = Buffer.alloc(0);
         }
-      }
-
-      // Check if full packet payload has arrived over TCP
-      if (this.buffer.length < 4 + packetSize) {
-        // Incomplete TCP packet: wait for remaining bytes to arrive
         break;
       }
 
-      // Complete packet received: extract payload (4-byte length header + payload)
-      const payload = this.buffer.subarray(4, 4 + packetSize);
-      this.buffer = this.buffer.subarray(4 + packetSize);
+      if (this.buffer.length < 12 + packetSize) {
+        break;
+      }
 
-      const nalType = payload.length >= 5 && payload[0] === 0 && payload[1] === 0 && payload[2] === 0 && payload[3] === 1
-        ? (payload[4] & 0x1f)
-        : (payload[0] & 0x1f);
+      let payload = this.buffer.subarray(12, 12 + packetSize);
+      this.buffer = this.buffer.subarray(12 + packetSize);
 
-      logger.info(`[Scrcpy] NAL LENGTH: ${packetSize}`, 'ScrcpyDemuxer');
-      logger.info(`[Scrcpy] NAL TYPE: ${nalType}`, 'ScrcpyDemuxer');
-      logger.info('[Scrcpy] PACKET FORWARDED TO DECODER', 'ScrcpyDemuxer');
+      const hasStartCode =
+        (payload.length >= 4 && payload[0] === 0 && payload[1] === 0 && payload[2] === 0 && payload[3] === 1) ||
+        (payload.length >= 3 && payload[0] === 0 && payload[1] === 0 && payload[2] === 1);
+
+      if (!hasStartCode) {
+        payload = Buffer.concat([Buffer.from([0x00, 0x00, 0x00, 0x01]), payload]);
+      }
+
       onFramePayload(payload);
     }
   }

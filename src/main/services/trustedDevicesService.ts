@@ -51,6 +51,15 @@ export interface DeviceInfoModel {
   preferredTransport?: 'usb' | 'wireless';
 }
 
+export function cleanIp(ip?: string): string {
+  if (!ip) return '';
+  const trimmed = ip.trim();
+  if (trimmed.includes(':')) {
+    return trimmed.split(':')[0] || '';
+  }
+  return trimmed;
+}
+
 export class TrustedDevicesService {
   private static instance: TrustedDevicesService;
   private filePath: string;
@@ -68,8 +77,77 @@ export class TrustedDevicesService {
     return TrustedDevicesService.instance;
   }
 
+  private isValidHardwareSerial(s?: string): boolean {
+    if (!s) return false;
+    const trimmed = s.trim();
+    if (!trimmed || trimmed.includes(':') || trimmed.includes('._tcp') || trimmed.includes('_adb-tls-') || trimmed.toLowerCase() === 'unknown') {
+      return false;
+    }
+    return true;
+  }
+
   private getDeviceKey(item: Partial<DeviceInfoModel>): string {
-    return item.hardwareSerial || item.id || (item.model && item.model !== 'Generic Device' ? `${item.manufacturer}_${item.model}` : item.serialNumber || '');
+    if (this.isValidHardwareSerial(item.hardwareSerial)) {
+      return item.hardwareSerial!.trim();
+    }
+    if (item.manufacturer && item.model && item.model !== 'Generic Device' && item.model !== 'Android Phone') {
+      return `${item.manufacturer}_${item.model}`;
+    }
+    if (this.isValidHardwareSerial(item.serialNumber)) {
+      return item.serialNumber!.trim();
+    }
+    const cIp = cleanIp(item.ipAddress);
+    if (cIp) {
+      return `ip_${cIp}`;
+    }
+    return item.id || `dev_${Date.now()}`;
+  }
+
+  public normalizeAndDeduplicateStore(): void {
+    const list = Array.from(this.trustedDevices.values());
+    this.trustedDevices.clear();
+
+    for (const item of list) {
+      item.ipAddress = cleanIp(item.ipAddress);
+
+      if (!this.isValidHardwareSerial(item.hardwareSerial)) {
+        item.hardwareSerial = this.isValidHardwareSerial(item.serialNumber)
+          ? item.serialNumber
+          : item.manufacturer && item.model && item.model !== 'Generic Device'
+          ? `${item.manufacturer}_${item.model}`
+          : item.ipAddress
+          ? `ip_${item.ipAddress}`
+          : item.id;
+      }
+
+      if (!item.deviceName || item.deviceName.includes('._tcp') || item.deviceName.includes('_adb-tls-') || item.deviceName === 'Disconnected Device') {
+        item.deviceName = `${item.manufacturer || 'Android'} ${item.model || 'Device'}`;
+      }
+
+      const key = this.getDeviceKey(item);
+      const existing = this.trustedDevices.get(key);
+
+      if (!existing) {
+        this.trustedDevices.set(key, item);
+      } else {
+        const latestTime = new Date(item.lastConnected).getTime() > new Date(existing.lastConnected).getTime();
+        const merged: DeviceInfoModel = {
+          ...existing,
+          ...(latestTime ? item : {}),
+          id: existing.id || item.id,
+          hardwareSerial: existing.hardwareSerial || item.hardwareSerial,
+          ipAddress: item.ipAddress || existing.ipAddress,
+          port: (latestTime && item.port) ? item.port : existing.port,
+          deviceName: existing.deviceName && !existing.deviceName.includes('Disconnected') ? existing.deviceName : item.deviceName,
+          model: existing.model && existing.model !== 'Generic Device' ? existing.model : item.model,
+          manufacturer: existing.manufacturer && existing.manufacturer !== 'Android' ? existing.manufacturer : item.manufacturer,
+          availableTransports: item.availableTransports || existing.availableTransports,
+          isTrusted: true,
+        };
+        this.trustedDevices.set(key, merged);
+      }
+    }
+    this.saveToDisk();
   }
 
   private loadFromDisk(): void {
@@ -80,13 +158,13 @@ export class TrustedDevicesService {
         for (const item of list) {
           const key = this.getDeviceKey(item);
           if (key) {
-            // Deduplicate stale duplicate entries from older versions
             const existing = this.trustedDevices.get(key);
             if (!existing || new Date(item.lastConnected).getTime() > new Date(existing.lastConnected).getTime()) {
               this.trustedDevices.set(key, item);
             }
           }
         }
+        this.normalizeAndDeduplicateStore();
         logger.info(`Loaded ${this.trustedDevices.size} unique physical trusted devices from store`, 'TrustedDevicesService');
       }
     } catch (err) {
@@ -158,7 +236,17 @@ export class TrustedDevicesService {
     this.saveToDisk();
   }
 
-  public addDevice(entry: { serialNumber: string; deviceName: string; model: string; ipAddress?: string; port?: number; connectionType: 'usb' | 'wireless'; lastConnected: number; hardwareSerial?: string }): void {
+  public addDevice(entry: {
+    serialNumber: string;
+    deviceName: string;
+    model: string;
+    manufacturer?: string;
+    ipAddress?: string;
+    port?: number;
+    connectionType: 'usb' | 'wireless';
+    lastConnected: number;
+    hardwareSerial?: string;
+  }): void {
     const existing = this.getBySerial(entry.hardwareSerial || entry.serialNumber);
     const updated: DeviceInfoModel = {
       id: existing?.id || `dev-${Date.now()}`,
@@ -166,7 +254,7 @@ export class TrustedDevicesService {
       hardwareSerial: entry.hardwareSerial || existing?.hardwareSerial,
       deviceName: entry.deviceName,
       model: entry.model,
-      manufacturer: existing?.manufacturer || 'Android',
+      manufacturer: entry.manufacturer || existing?.manufacturer || 'Android',
       androidVersion: existing?.androidVersion || '11+',
       batteryLevel: existing?.batteryLevel || 100,
       isCharging: existing?.isCharging || false,
@@ -202,22 +290,25 @@ export class TrustedDevicesService {
     const clean = serial.trim();
     if (!clean) return false;
 
+    const cleanTargetIp = cleanIp(clean);
+    const targetDev = this.getBySerial(clean);
+
     const beforeCount = this.trustedDevices.size;
     logger.info(`[TrustedDevicesService] Before: ${beforeCount} trusted device(s)`, 'TrustedDevicesService');
     logger.info(`[TrustedDevicesService] Removing: ${clean}`, 'TrustedDevicesService');
 
-    const targetDev = this.getBySerial(clean);
     const keysToDelete = new Set<string>();
-    keysToDelete.add(clean);
 
     for (const [key, dev] of this.trustedDevices.entries()) {
+      const devCleanIp = cleanIp(dev.ipAddress);
+
       const matchesDirectly =
         key === clean ||
         dev.id === clean ||
         dev.serialNumber === clean ||
         dev.hardwareSerial === clean ||
-        (dev.ipAddress && dev.ipAddress === clean) ||
-        dev.availableTransports?.some((t) => t.serial === clean);
+        (cleanTargetIp && (key.includes(cleanTargetIp) || devCleanIp === cleanTargetIp || dev.serialNumber.includes(cleanTargetIp) || (dev.hardwareSerial && dev.hardwareSerial.includes(cleanTargetIp)))) ||
+        dev.availableTransports?.some((t) => t.serial === clean || cleanIp(t.ipAddress) === cleanTargetIp);
 
       const matchesTargetDev =
         targetDev &&
@@ -225,6 +316,7 @@ export class TrustedDevicesService {
           dev.id === targetDev.id ||
           (dev.hardwareSerial && targetDev.hardwareSerial && dev.hardwareSerial === targetDev.hardwareSerial) ||
           (dev.serialNumber && targetDev.serialNumber && dev.serialNumber === targetDev.serialNumber) ||
+          (devCleanIp && cleanIp(targetDev.ipAddress) && devCleanIp === cleanIp(targetDev.ipAddress)) ||
           (dev.model && targetDev.model && dev.model !== 'Generic Device' && dev.model === targetDev.model && dev.manufacturer === targetDev.manufacturer));
 
       if (matchesDirectly || matchesTargetDev) {
@@ -242,7 +334,7 @@ export class TrustedDevicesService {
     const afterCount = this.trustedDevices.size;
     logger.info(`[TrustedDevicesService] After: ${afterCount} trusted device(s)`, 'TrustedDevicesService');
 
-    const wasRemoved = beforeCount > afterCount;
+    const wasRemoved = beforeCount > afterCount || keysToDelete.size > 0;
     if (wasRemoved) {
       this.saveToDisk();
       logger.info(`[TrustedDevicesService] Successfully removed device '${clean}' from persistent store`, 'TrustedDevicesService');

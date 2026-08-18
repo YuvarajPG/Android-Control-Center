@@ -25,14 +25,18 @@ export class Decoder extends EventEmitter {
 
     this.ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
 
+    this.ffmpegProcess.on('error', (err) => {
+      logger.error(`[Scrcpy] FFmpeg process spawn error: ${err.message}`, 'Decoder');
+    });
+
     this.ffmpegProcess.on('exit', (code, signal) => {
       logger.info(`[Scrcpy] Decoder process exited code=${code} signal=${signal}`, 'Decoder');
     });
 
     this.ffmpegProcess.stderr?.on('data', (data) => {
       const errStr = data.toString().trim();
-      if (errStr.toLowerCase().includes('error')) {
-        logger.warn(`[Scrcpy] Decoder error: ${errStr}`, 'Decoder');
+      if (errStr) {
+        logger.info(`[FFmpeg stderr] ${errStr}`, 'Decoder');
       }
     });
 

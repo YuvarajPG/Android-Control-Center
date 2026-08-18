@@ -15,7 +15,7 @@ export class AppInfoService {
    */
   public static getAppVersionInfo(): AppVersionInfo {
     return {
-      appVersion: app.getVersion(),
+      appVersion: 'Beta',
       appName: app.getName(),
       electronVersion: process.versions.electron || 'unknown',
       nodeVersion: process.versions.node || 'unknown',

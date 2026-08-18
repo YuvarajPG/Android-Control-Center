@@ -1,15 +1,84 @@
+import fs from 'fs';
+import path from 'path';
+import https from 'https';
 import { spawn, ChildProcess } from 'child_process';
 import { EventEmitter } from 'events';
 import { logger } from '../loggerService';
 import { ScrcpyProtocol } from './ScrcpyProtocol';
 import { ScrcpySocket } from './ScrcpySocket';
 import { adbService } from '../adbService';
+import { PathUtils } from '../../utils/pathUtils';
 
 export interface TransportConfig {
   serial: string;
   bitrate: number;
   fps: number;
   quality: 'low' | 'medium' | 'high';
+}
+
+async function ensureScrcpyServer(): Promise<string> {
+  const binDir = path.join(PathUtils.getUserDataPath(), 'bin');
+  const serverPath = path.join(binDir, 'scrcpy-server.jar');
+
+  if (fs.existsSync(serverPath) && fs.statSync(serverPath).size > 10000) {
+    return serverPath;
+  }
+
+  const possiblePaths = [
+    path.join(process.cwd(), 'resources', 'scrcpy-server.jar'),
+    path.join(process.cwd(), 'bin', 'scrcpy-server.jar'),
+    '/usr/share/scrcpy/scrcpy-server',
+  ];
+
+  for (const p of possiblePaths) {
+    if (fs.existsSync(p) && fs.statSync(p).size > 10000) {
+      return p;
+    }
+  }
+
+  if (!fs.existsSync(binDir)) {
+    fs.mkdirSync(binDir, { recursive: true });
+  }
+
+  const downloadUrl = 'https://github.com/Genymobile/scrcpy/releases/download/v2.4/scrcpy-server-v2.4';
+  logger.info(`Downloading scrcpy-server.jar from ${downloadUrl}...`, 'ScrcpyTransport');
+
+  await new Promise<void>((resolve, reject) => {
+    const fileStream = fs.createWriteStream(serverPath);
+    https.get(downloadUrl, (res) => {
+      if (res.statusCode === 301 || res.statusCode === 302) {
+        const redirectUrl = res.headers.location;
+        if (!redirectUrl) {
+          reject(new Error('Redirect location missing'));
+          return;
+        }
+        https.get(redirectUrl, (redRes) => {
+          if (redRes.statusCode !== 200) {
+            reject(new Error(`HTTP ${redRes.statusCode}`));
+            return;
+          }
+          redRes.pipe(fileStream);
+          fileStream.on('finish', () => {
+            fileStream.close();
+            resolve();
+          });
+        }).on('error', reject);
+        return;
+      }
+      if (res.statusCode !== 200) {
+        reject(new Error(`HTTP ${res.statusCode}`));
+        return;
+      }
+      res.pipe(fileStream);
+      fileStream.on('finish', () => {
+        fileStream.close();
+        resolve();
+      });
+    }).on('error', reject);
+  });
+
+  logger.info(`scrcpy-server.jar downloaded successfully to ${serverPath}`, 'ScrcpyTransport');
+  return serverPath;
 }
 
 export class ScrcpyTransport extends EventEmitter {
@@ -20,6 +89,7 @@ export class ScrcpyTransport extends EventEmitter {
   private ppsReceived: boolean = false;
   private idrReceived: boolean = false;
   private port: number = 27183;
+  private currentSerial: string = '';
 
   private stdoutLines: string[] = [];
   private stderrLines: string[] = [];
@@ -33,6 +103,7 @@ export class ScrcpyTransport extends EventEmitter {
     this.firstByteReceived = false;
     this.stdoutLines = [];
     this.stderrLines = [];
+    this.currentSerial = config.serial;
 
     try {
       // 0. Ensure previous transport instance is completely stopped
@@ -44,11 +115,12 @@ export class ScrcpyTransport extends EventEmitter {
         'shell', 'pkill -f com.genymobile.scrcpy.Server || true'
       ]).catch(() => {});
 
-      // 1. Push scrcpy-server
-      logger.info('[Scrcpy] Pushing scrcpy-server.jar to device...', 'ScrcpyTransport');
+      // 1. Resolve & Push scrcpy-server.jar
+      const localServerJar = await ensureScrcpyServer();
+      logger.info(`[Scrcpy] Pushing ${localServerJar} to /data/local/tmp/scrcpy-server.jar...`, 'ScrcpyTransport');
       await adbService.execAdb([
         ...(config.serial ? ['-s', config.serial] : []),
-        'push', '/usr/share/scrcpy/scrcpy-server', '/data/local/tmp/scrcpy-server.jar'
+        'push', localServerJar, '/data/local/tmp/scrcpy-server.jar'
       ]);
 
       // 2. Create adb forward tunnel with dynamic port
@@ -64,6 +136,7 @@ export class ScrcpyTransport extends EventEmitter {
       logger.info(`[Scrcpy] ADB forward created on port ${this.port}`, 'ScrcpyTransport');
 
       // 3. Start scrcpy-server on device
+      const maxDim = config.quality === 'high' ? 1920 : config.quality === 'medium' ? 1280 : 800;
       const serverArgs = [
         ...(config.serial ? ['-s', config.serial] : []),
         'shell',
@@ -71,7 +144,7 @@ export class ScrcpyTransport extends EventEmitter {
         'app_process',
         '/',
         'com.genymobile.scrcpy.Server',
-        '4.1',
+        '2.4',
         'tunnel_forward=true',
         'audio=false',
         'control=false',
@@ -213,7 +286,10 @@ export class ScrcpyTransport extends EventEmitter {
     if (this.port > 0) {
       const p = this.port;
       this.port = 0;
-      await adbService.execAdb(['forward', '--remove', `tcp:${p}`]).catch(() => {});
+      await adbService.execAdb([
+        ...(this.currentSerial ? ['-s', this.currentSerial] : []),
+        'forward', '--remove', `tcp:${p}`
+      ]).catch(() => {});
     }
 
     this.firstPacketReceived = false;

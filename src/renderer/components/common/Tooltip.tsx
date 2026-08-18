@@ -46,10 +46,10 @@ export const Tooltip: React.FC<TooltipProps> = ({
     if (targetRect.width === 0 && targetRect.height === 0) return;
 
     const tooltipEl = tooltipRef.current;
-    const tooltipWidth = tooltipEl?.offsetWidth || 160;
-    const tooltipHeight = tooltipEl?.offsetHeight || 32;
-    const gap = 8;
-    const padding = 12;
+    const tooltipWidth = tooltipEl?.offsetWidth || 140;
+    const tooltipHeight = tooltipEl?.offsetHeight || 28;
+    const gap = 6;
+    const padding = 8;
 
     const vw = window.innerWidth;
     const vh = window.innerHeight;
@@ -67,56 +67,38 @@ export const Tooltip: React.FC<TooltipProps> = ({
       placement = 'left';
     }
 
-    let top = 0;
-    let left = 0;
-
     const targetCenterX = targetRect.left + targetRect.width / 2;
     const targetCenterY = targetRect.top + targetRect.height / 2;
 
-    if (placement === 'top') {
-      top = targetRect.top - gap;
-      left = targetCenterX;
-    } else if (placement === 'bottom') {
-      top = targetRect.bottom + gap;
-      left = targetCenterX;
-    } else if (placement === 'left') {
-      top = targetCenterY;
-      left = targetRect.left - gap;
-    } else {
-      top = targetCenterY;
-      left = targetRect.right + gap;
-    }
-
+    let top = 0;
+    let left = 0;
     let arrowLeftOffset: number | undefined;
     let arrowTopOffset: number | undefined;
 
-    // Viewport edge containment & Arrow tracking adjustment
-    if (placement === 'top' || placement === 'bottom') {
-      const halfW = tooltipWidth / 2;
-      let clampedLeft = left;
-
-      if (left - halfW < padding) {
-        clampedLeft = padding + halfW;
-      } else if (left + halfW > vw - padding) {
-        clampedLeft = vw - padding - halfW;
-      }
-
-      arrowLeftOffset = targetCenterX - (clampedLeft - halfW);
+    if (placement === 'top') {
+      top = Math.round(targetRect.top - tooltipHeight - gap);
+      left = Math.round(targetCenterX - tooltipWidth / 2);
+      const clampedLeft = Math.max(padding, Math.min(vw - padding - tooltipWidth, left));
+      arrowLeftOffset = Math.round(Math.max(8, Math.min(tooltipWidth - 8, targetCenterX - clampedLeft)));
       left = clampedLeft;
-      top = Math.max(padding, Math.min(vh - padding, top));
-    } else {
-      const halfH = tooltipHeight / 2;
-      let clampedTop = top;
-
-      if (top - halfH < padding) {
-        clampedTop = padding + halfH;
-      } else if (top + halfH > vh - padding) {
-        clampedTop = vh - padding - halfH;
-      }
-
-      arrowTopOffset = targetCenterY - (clampedTop - halfH);
+    } else if (placement === 'bottom') {
+      top = Math.round(targetRect.bottom + gap);
+      left = Math.round(targetCenterX - tooltipWidth / 2);
+      const clampedLeft = Math.max(padding, Math.min(vw - padding - tooltipWidth, left));
+      arrowLeftOffset = Math.round(Math.max(8, Math.min(tooltipWidth - 8, targetCenterX - clampedLeft)));
+      left = clampedLeft;
+    } else if (placement === 'left') {
+      top = Math.round(targetCenterY - tooltipHeight / 2);
+      left = Math.round(targetRect.left - tooltipWidth - gap);
+      const clampedTop = Math.max(padding, Math.min(vh - padding - tooltipHeight, top));
+      arrowTopOffset = Math.round(Math.max(8, Math.min(tooltipHeight - 8, targetCenterY - clampedTop)));
       top = clampedTop;
-      left = Math.max(padding, Math.min(vw - padding, left));
+    } else {
+      top = Math.round(targetCenterY - tooltipHeight / 2);
+      left = Math.round(targetRect.right + gap);
+      const clampedTop = Math.max(padding, Math.min(vh - padding - tooltipHeight, top));
+      arrowTopOffset = Math.round(Math.max(8, Math.min(tooltipHeight - 8, targetCenterY - clampedTop)));
+      top = clampedTop;
     }
 
     setCoords({
@@ -171,13 +153,6 @@ export const Tooltip: React.FC<TooltipProps> = ({
     };
   }, []);
 
-  const transformStyle: Record<string, string> = {
-    top: 'translate(-50%, -100%)',
-    bottom: 'translate(-50%, 0)',
-    left: 'translate(-100%, -50%)',
-    right: 'translate(0, -50%)',
-  };
-
   const actualPos = coords.actualPosition;
 
   return (
@@ -199,35 +174,34 @@ export const Tooltip: React.FC<TooltipProps> = ({
             style={{
               top: `${coords.top}px`,
               left: `${coords.left}px`,
-              transform: transformStyle[actualPos],
             }}
             className={cn(
-              'fixed z-[99999] pointer-events-none transition-opacity duration-150 animate-[fade-in_120ms_ease-out]',
-              'px-3 py-1.5 rounded-m3-md text-xs font-medium text-slate-100 bg-slate-900/95 border border-slate-700/60 shadow-xl shadow-black/40 backdrop-blur-md',
-              'max-w-xs sm:max-w-sm whitespace-normal break-words leading-snug',
+              'fixed z-[99999] pointer-events-none transition-opacity duration-150 animate-[fade-in_100ms_ease-out]',
+              'px-2.5 py-1 rounded-m3-xs text-[11px] font-medium text-slate-100 bg-slate-900 border border-slate-700/80 shadow-lg shadow-black/50 antialiased',
+              'max-w-xs sm:max-w-sm whitespace-normal break-words leading-tight',
               className,
             )}
           >
-            <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center gap-2 min-w-0">
               {icon && <span className="shrink-0 flex items-center justify-center text-m3-primary">{icon}</span>}
-              <div className="min-w-0 flex-1 whitespace-normal break-words">{content}</div>
+              <div className="min-w-0 flex-1 whitespace-normal break-words text-slate-100">{content}</div>
             </div>
 
             <span
               style={{
                 ...(coords.arrowLeftOffset !== undefined && (actualPos === 'top' || actualPos === 'bottom')
-                  ? { left: `${coords.arrowLeftOffset}px`, transform: 'translateX(-50%) rotate(45deg)' }
+                  ? { left: `${coords.arrowLeftOffset}px` }
                   : {}),
                 ...(coords.arrowTopOffset !== undefined && (actualPos === 'left' || actualPos === 'right')
-                  ? { top: `${coords.arrowTopOffset}px`, transform: 'translateY(-50%) rotate(45deg)' }
+                  ? { top: `${coords.arrowTopOffset}px` }
                   : {}),
               }}
               className={cn(
-                'absolute w-2 h-2 bg-slate-900 border-slate-700/60 rotate-45 pointer-events-none',
-                actualPos === 'top' && '-bottom-1 left-1/2 -translate-x-1/2 border-b border-r',
-                actualPos === 'bottom' && '-top-1 left-1/2 -translate-x-1/2 border-t border-l',
-                actualPos === 'left' && '-right-1 top-1/2 -translate-y-1/2 border-t border-r',
-                actualPos === 'right' && '-left-1 top-1/2 -translate-y-1/2 border-b border-l',
+                'absolute w-2 h-2 bg-slate-900 border-slate-700/80 rotate-45 pointer-events-none',
+                actualPos === 'top' && '-bottom-1 -translate-x-1/2 border-b border-r',
+                actualPos === 'bottom' && '-top-1 -translate-x-1/2 border-t border-l',
+                actualPos === 'left' && '-right-1 -translate-y-1/2 border-t border-r',
+                actualPos === 'right' && '-left-1 -translate-y-1/2 border-b border-l',
               )}
             />
           </div>,

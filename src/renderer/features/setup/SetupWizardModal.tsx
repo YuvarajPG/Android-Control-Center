@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   RefreshCw,
   Wifi,
@@ -127,41 +127,114 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({ isOpen, onCl
     }
   }, []);
 
+  // Keep track of active session to prevent stale responses from affecting new sessions
+  const currentSessionIdRef = useRef<string | null>(null);
+
   // QR status monitor & timer countdown
   useEffect(() => {
     if (wirelessPairingMethod !== 'qr') return undefined;
 
-    const interval = setInterval(async () => {
+    let isPolling = true;
+    let pollCount = 0;
+
+    console.log(`[QR] Polling started`);
+
+    const pollStatus = async () => {
+      if (!isPolling) return;
+      pollCount++;
+
       try {
         const statusRes = await ipcService.adb.getQrStatus();
+        if (!isPolling) return;
+
         if (statusRes.success && statusRes.data) {
           const data = statusRes.data as any;
-          setQrPairingState(data.status);
+          console.log(`[QR] Poll #${pollCount}`);
+          console.log(`[QR] Response:`, JSON.stringify(data, null, 2));
+
+          // Guard against stale responses from previous pairing sessions
+          if (currentSessionIdRef.current && data.sessionId && currentSessionIdRef.current !== data.sessionId) {
+            console.log(`[QR] Ignored stale response from old session (Current: ${currentSessionIdRef.current}, Received: ${data.sessionId})`);
+            return;
+          }
+          if (data.sessionId) {
+            currentSessionIdRef.current = data.sessionId;
+          }
+
+          setQrPairingState((prevState) => {
+            if (prevState !== data.status) {
+              console.log(`[QR] Transition: ${prevState || 'IDLE'} -> ${data.status}`);
+            }
+            return data.status;
+          });
+
           if (data.errorMessage) {
             setQrErrorMessage(data.errorMessage);
           }
 
-          // If pairing connected successfully, proceed automatically to Step 5
-          if (data.status === 'CONNECTED') {
-            clearInterval(interval);
-            setCurrentStep(5);
+          // Define explicit terminal states
+          const terminalStates = ['CONNECTED', 'FAILED', 'EXPIRED', 'PAIRED_PORT_FAILED', 'CANCELLED'];
+          
+          if (terminalStates.includes(data.status)) {
+            console.log(`[QR] Polling stopped`);
+            console.log(`[QR] Reason: reached terminal state ${data.status}`);
+            isPolling = false;
+
+            if (data.status === 'CONNECTED') {
+              console.log(`[QR] Starting connection discovery`);
+              const connSerial = data.connectedSerial || data.discoveredIp || 'Connected Wireless Device';
+              const connIp = data.discoveredIp || (connSerial.includes(':') ? connSerial.split(':')[0] : undefined);
+              const connPort = data.discoveredPort || (connSerial.includes(':') ? parseInt(connSerial.split(':')[1], 10) : undefined);
+
+              setVerifiedSetupDevice({
+                serialNumber: connSerial,
+                deviceName: data.deviceName || 'Wireless Android Device',
+                model: data.model || 'Android Device',
+                connectionType: 'wireless',
+                ipAddress: connIp,
+                port: connPort,
+                status: 'online',
+                isTrusted: true,
+              });
+              setCurrentStep(5);
+            }
           }
         }
-      } catch {
-        // ignore check errors
+      } catch (err: any) {
+        console.error('[QR] Poll failed:', err);
       }
+    };
 
+    const interval = setInterval(() => {
+      if (!isPolling) {
+        clearInterval(interval);
+        return;
+      }
+      
+      pollStatus();
+      
       setQrTimeLeft((prev) => {
         if (prev <= 1) {
           setQrPairingState('EXPIRED');
           setQrErrorMessage('Pairing timed out.');
+          console.log(`[QR] Polling stopped`);
+          console.log(`[QR] Reason: QR timer expired on frontend`);
+          isPolling = false;
+          clearInterval(interval);
           return 0;
         }
         return prev - 1;
       });
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      if (isPolling) {
+        console.log(`[QR] Polling stopped`);
+        console.log(`[QR] Reason: component unmounted or wireless method changed`);
+      }
+      isPolling = false;
+      clearInterval(interval);
+    };
   }, [wirelessPairingMethod]);
 
   // Target device explicitly verified during this setup wizard session
@@ -186,7 +259,15 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({ isOpen, onCl
     setIsSearchingDevice(true);
 
     try {
-      const activeDevs = customDevs || (await ipcService.invoke<any[]>('device:rescan'));
+      let activeDevs = (customDevs && customDevs.length > 0) ? customDevs : [];
+      const hasOnlineInCustom = activeDevs.some((d: any) => d.status === 'online' || d.status === 'device');
+
+      if (!hasOnlineInCustom) {
+        const rescanned = await ipcService.invoke<any[]>('device:rescan');
+        if (rescanned && rescanned.length > 0) {
+          activeDevs = rescanned;
+        }
+      }
       setIsSearchingDevice(false);
 
       // 1. Try matching explicit verified setup target from Step 4
@@ -238,11 +319,16 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({ isOpen, onCl
         setDiscoverySuccess(true);
         setDiscoveryFailed(false);
         setDeviceAuthRequired(false);
-        setDiscoveryStatus('Target device verified and connected!');
+        let cleanName = targetDev.deviceName || targetDev.name || targetDev.model || 'Android Device';
+        if (cleanName.includes('._tcp') || cleanName.includes('_adb-tls-')) {
+          cleanName = `${targetDev.manufacturer || 'Android'} ${targetDev.model || 'Device'}`;
+        }
+
         setVerifiedSetupDevice({
           serialNumber: targetDev.serialNumber || targetDev.serial || 'Connected',
-          deviceName: targetDev.deviceName || targetDev.name || targetDev.model || 'Android Device',
+          deviceName: cleanName,
           model: targetDev.model || 'Android Phone',
+          manufacturer: targetDev.manufacturer || 'Android',
           connectionType: targetDev.connectionType === 'wireless' || targetDev.serial?.includes(':') ? 'wireless' : 'usb',
           ipAddress: targetDev.ipAddress || (targetDev.serial?.includes(':') ? targetDev.serial.split(':')[0] : undefined),
           port: targetDev.port || (targetDev.serial?.includes(':') ? parseInt(targetDev.serial.split(':')[1], 10) : undefined),
@@ -951,17 +1037,23 @@ export const SetupWizardModal: React.FC<SetupWizardModalProps> = ({ isOpen, onCl
                           )}
                         </div>
 
-                        <div className="p-2.5 bg-m3-surface-2 rounded-m3-md border border-m3-surface-4 text-xs font-mono flex justify-between items-center">
-                          <span>
+                        <div className="p-2.5 bg-m3-surface-2 rounded-m3-md border border-m3-surface-4 text-xs font-mono text-center space-y-1">
+                          <div>
                             Status:{' '}
                             <strong className="text-m3-primary font-bold">
                               {qrPairingState === 'WAITING' && 'Waiting for phone...'}
-                              {qrPairingState === 'PAIRING' && 'Pairing...'}
+                              {qrPairingState === 'PAIRING' && 'Phone detected — starting pairing...'}
+                              {qrPairingState === 'PAIRED' && 'Pairing successful. Discovering wireless connection...'}
+                              {qrPairingState === 'DISCOVERING' && 'Discovering wireless connection...'}
                               {qrPairingState === 'CONNECTING' && 'Connecting...'}
-                              {qrPairingState === 'CONNECTED' && 'Connected!'}
+                              {qrPairingState === 'CONNECTED' && 'Wireless device connected!'}
                             </strong>
-                          </span>
-                          <span>Code: <strong className="text-m3-success font-bold">{qrPairingCode || '...'}</strong></span>
+                          </div>
+                          {qrPairingCode && (
+                            <div className="text-[11px] text-m3-on-surface-variant">
+                              Pairing Code: <strong className="text-m3-primary font-bold">{qrPairingCode}</strong>
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex justify-between gap-2 pt-1">

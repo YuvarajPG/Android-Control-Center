@@ -57,30 +57,31 @@ export const NavigationDrawer: React.FC = () => {
       aria-label="Primary navigation"
     >
       {/* Brand Header */}
-      <div className="h-16 px-4 flex items-center justify-between border-b border-m3-surface-3 shrink-0">
-        <div className="flex items-center gap-3 min-w-0 overflow-hidden">
+      <div className={cn("h-16 flex items-center border-b border-m3-surface-3 shrink-0 transition-all", isCollapsed ? "justify-center px-0" : "justify-between px-4")}>
+        <div className={cn("flex items-center gap-3 min-w-0 overflow-hidden transition-opacity", isCollapsed ? "opacity-0 hidden" : "opacity-100")}>
           <div className="p-2 rounded-m3-md bg-m3-primary-container text-m3-on-primary-container shrink-0">
             <Zap className="h-5 w-5 text-m3-primary" />
           </div>
-          {!isCollapsed && (
-            <div className="flex flex-col min-w-0 truncate">
-              <span className="text-sm font-bold text-m3-on-surface tracking-wide truncate">
-                Android Control
-              </span>
-              <span className="text-[10px] font-semibold tracking-wider text-m3-primary uppercase truncate">
-                Center Shell
-              </span>
-            </div>
-          )}
+          <div className="flex flex-col min-w-0 truncate">
+            <span className="text-sm font-bold text-m3-on-surface tracking-wide truncate">
+              Android Control
+            </span>
+            <span className="text-[10px] font-semibold tracking-wider text-m3-primary uppercase truncate">
+              Center Shell
+            </span>
+          </div>
         </div>
         {!isCompactViewport && (
           <button
             onClick={toggleSidebar}
-            className="p-1 rounded-m3-sm text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-3 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-m3-primary"
+            className={cn(
+              "p-1.5 rounded-m3-sm text-m3-on-surface-variant hover:text-m3-on-surface hover:bg-m3-surface-3 transition-colors shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-m3-primary",
+              isCollapsed && "mx-auto"
+            )}
             title={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
             aria-label={isCollapsed ? 'Expand Sidebar' : 'Collapse Sidebar'}
           >
-            {isCollapsed ? <ChevronRight className="h-4 w-4" /> : <ChevronLeft className="h-4 w-4" />}
+            {isCollapsed ? <ChevronRight className="h-5 w-5" /> : <ChevronLeft className="h-4 w-4" />}
           </button>
         )}
       </div>
@@ -129,11 +130,11 @@ export const NavigationDrawer: React.FC = () => {
       <div className="p-3 border-t border-m3-surface-3 text-center">
         {!isCollapsed ? (
           <div className="flex items-center justify-between text-[11px] text-m3-on-surface-variant/70">
-            <span>ADB Shell v1.0.0</span>
-            <span className="px-1.5 py-0.5 rounded bg-m3-surface-3 text-[10px] font-mono text-m3-primary">v1.0</span>
+            <span>ADB Shell</span>
+            <span className="px-1.5 py-0.5 rounded bg-m3-surface-3 text-[10px] font-mono text-m3-primary">Beta</span>
           </div>
         ) : (
-          <span className="text-[10px] font-mono text-m3-primary">v1.0</span>
+          <span className="text-[10px] font-mono text-m3-primary">Beta</span>
         )}
       </div>
     </aside>

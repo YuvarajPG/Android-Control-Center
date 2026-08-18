@@ -5,19 +5,22 @@
   "directories": {
     "output": "release/${version}"
   },
-  "files": [
-    "dist/**/*",
-    "dist-electron/**/*"
-  ],
+  "files": ["dist/**/*", "dist-electron/**/*"],
   "mac": {
     "category": "public.app-category.developer-tools",
     "target": ["dmg", "zip"]
   },
   "win": {
-    "target": ["nsis", "portable"]
+    "target": ["nsis"]
   },
   "linux": {
     "target": ["AppImage", "deb", "tar.gz"],
     "category": "Development"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "perMachine": true,
+    "include": "build/installer.nsh"
   }
 }

@@ -106,8 +106,8 @@ const ControlButton: React.FC<ControlButtonProps> = ({ label, children, classNam
       {isHovered &&
         createPortal(
           <div
-            className="fixed z-[9999] -translate-x-1/2 rounded-m3-xs bg-m3-surface-5 px-2.5 py-1 text-[11px] font-semibold text-m3-on-surface shadow-m3-3 backdrop-blur-md animate-in fade-in zoom-in-95 duration-100 pointer-events-none border border-white/10"
-            style={{ top: `${tooltipPos.top}px`, left: `${tooltipPos.left}px` }}
+            className="fixed z-[9999] -translate-x-1/2 rounded-m3-xs bg-slate-900 px-2.5 py-1 text-[11px] font-medium text-slate-100 shadow-lg shadow-black/50 border border-slate-700/80 animate-in fade-in duration-100 pointer-events-none antialiased"
+            style={{ top: `${Math.round(tooltipPos.top)}px`, left: `${Math.round(tooltipPos.left)}px` }}
           >
             {label}
           </div>,
@@ -274,34 +274,43 @@ export const ScreenFeature: React.FC = () => {
 
   useEffect(() => {
     if (!isMirroring) return;
-    const updateStatistics = async () => {
-      try {
-        const stats = await ipcService.screen.getStats();
-        if (stats) {
-          setStatistics(stats);
+  const updateStatistics = async () => {
+    try {
+      const stats = await ipcService.screen.getStats();
+      if (stats) {
+        setStatistics(stats);
+        if (stats.fps > 0) {
+          setHasReceivedFrame(true);
+          setStatusProgression('Live');
         }
-      } catch {
-        // Suppress stats error
       }
-    };
-    updateStatistics();
-    const timer = window.setInterval(updateStatistics, 1000);
-    return () => window.clearInterval(timer);
-  }, [isMirroring]);
+    } catch {
+      // Suppress stats error
+    }
+  };
+  updateStatistics();
+  const timer = window.setInterval(updateStatistics, 1000);
+  return () => window.clearInterval(timer);
+}, [isMirroring]);
 
-  const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
+const [hasReceivedFrame, setHasReceivedFrame] = useState(false);
 
-  const streamConfigRef = useRef({ streamBitrate, fps, quality });
-  streamConfigRef.current = { streamBitrate, fps, quality };
+const streamConfigRef = useRef({ streamBitrate, fps, quality });
+streamConfigRef.current = { streamBitrate, fps, quality };
 
-  const latestFrameRef = useRef<ImageBitmap | null>(null);
-  const firstFrameDisplayedRef = useRef<boolean>(false);
+const firstFrameDisplayedRef = useRef<boolean>(false);
+
+  const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
   // Connect to backend WebSocket server and draw decoded Android frames to canvas
   useEffect(() => {
     const serial = device?.serialNumber || device?.serial || '';
     if (!isMirroring || !serial) {
       setHasReceivedFrame(false);
+      setStreamUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
       firstFrameDisplayedRef.current = false;
       setStatusProgression('Connecting to device...');
       ipcService.screen.stopStream().catch(() => {});
@@ -310,7 +319,6 @@ export const ScreenFeature: React.FC = () => {
 
     let ws: WebSocket | null = null;
     let isActive = true;
-    let rafId: number | null = null;
 
     // Status progression timers
     setStatusProgression('Connecting to device...');
@@ -321,96 +329,32 @@ export const ScreenFeature: React.FC = () => {
       if (isActive) setStatusProgression('Waiting for first frame...');
     }, 1500);
 
-    // Continuous requestAnimationFrame rendering loop consuming queued frames
-    const renderLoop = () => {
-      if (!isActive) return;
-
-      const bitmap = latestFrameRef.current;
-      if (bitmap && canvasRef.current) {
-        latestFrameRef.current = null; // Consume frame from queue
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d');
-
-        if (context) {
-          console.log('[Scrcpy] RENDER START');
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-          }
-
-          console.log('[Scrcpy] DRAWIMAGE CALLED');
-          context.drawImage(bitmap, 0, 0);
-          console.log('[Scrcpy] DRAW COMPLETE');
-
-          if (!firstFrameDisplayedRef.current) {
-            firstFrameDisplayedRef.current = true;
-            console.log('[Scrcpy] FIRST FRAME RECEIVED');
-            console.log('[Scrcpy] PLACEHOLDER HIDDEN');
-            setStatusProgression('Live');
-            setHasReceivedFrame(true);
-          }
-
-          console.log('[Scrcpy] FRAME PRESENTED');
-        }
-        bitmap.close();
-      }
-
-      rafId = requestAnimationFrame(renderLoop);
-    };
-
     const connectWebSocket = () => {
       if (!isActive) return;
       try {
-        const client = new WebSocket('ws://localhost:27184');
+        const client = new WebSocket('ws://127.0.0.1:27184');
         client.binaryType = 'arraybuffer';
 
         client.onopen = () => {
           console.log('[ScreenMirror] WebSocket connected to stream server');
         };
 
-        client.onmessage = async (event: MessageEvent) => {
+        client.onmessage = (event: MessageEvent) => {
           if (!isActive) return;
-          console.log('[Scrcpy] OUTPUT CALLBACK', event.data.byteLength);
+
+          if (!firstFrameDisplayedRef.current) {
+            firstFrameDisplayedRef.current = true;
+            setStatusProgression('Live');
+            setHasReceivedFrame(true);
+          }
+
           try {
             const blob = new Blob([event.data], { type: 'image/jpeg' });
-            const bitmap = await createImageBitmap(blob);
-            if (!isActive) {
-              bitmap.close();
-              return;
-            }
-
-            console.log('[Scrcpy] FRAME RECEIVED', bitmap.width, bitmap.height);
-
-            // Immediately draw on canvas if ready
-            if (canvasRef.current) {
-              const canvas = canvasRef.current;
-              const context = canvas.getContext('2d');
-              if (context) {
-                console.log('[Scrcpy] RENDER START');
-                if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-                  canvas.width = bitmap.width;
-                  canvas.height = bitmap.height;
-                }
-                console.log('[Scrcpy] DRAWIMAGE CALLED');
-                context.drawImage(bitmap, 0, 0);
-                console.log('[Scrcpy] DRAW COMPLETE');
-
-                if (!firstFrameDisplayedRef.current) {
-                  firstFrameDisplayedRef.current = true;
-                  console.log('[Scrcpy] FIRST FRAME RECEIVED');
-                  console.log('[Scrcpy] PLACEHOLDER HIDDEN');
-                  setStatusProgression('Live');
-                  setHasReceivedFrame(true);
-                }
-
-                console.log('[Scrcpy] FRAME PRESENTED');
-              }
-            }
-
-            if (latestFrameRef.current) {
-              latestFrameRef.current.close();
-            }
-            latestFrameRef.current = bitmap;
+            const url = URL.createObjectURL(blob);
+            setStreamUrl((prevUrl) => {
+              if (prevUrl) URL.revokeObjectURL(prevUrl);
+              return url;
+            });
           } catch (err) {
             console.error('[Scrcpy] Frame decode error:', err);
           }
@@ -438,7 +382,6 @@ export const ScreenFeature: React.FC = () => {
       const { streamBitrate: b, fps: f, quality: q } = streamConfigRef.current;
       console.log('[ScreenMirror] Starting stream pipeline for serial:', serial);
       connectWebSocket();
-      rafId = requestAnimationFrame(renderLoop);
       await ipcService.screen.startStream(serial, b, f, q);
     };
 
@@ -450,19 +393,16 @@ export const ScreenFeature: React.FC = () => {
       clearTimeout(t2);
       firstFrameDisplayedRef.current = false;
       setHasReceivedFrame(false);
-      if (rafId !== null) {
-        cancelAnimationFrame(rafId);
-      }
-      if (latestFrameRef.current) {
-        latestFrameRef.current.close();
-        latestFrameRef.current = null;
-      }
+      setStreamUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
       if (ws) {
         (ws as any).close();
       }
       ipcService.screen.stopStream().catch(() => {});
     };
-  }, [isMirroring, device?.serialNumber]);
+  }, [isMirroring, device?.serialNumber || (device as any)?.serial]);
 
   const handleTakeScreenshot = async () => {
     const serial = device?.serialNumber || device?.serial || '';
@@ -772,11 +712,23 @@ export const ScreenFeature: React.FC = () => {
                   )}
 
                   {showFrame && orientation === 'portrait' && <div className="absolute left-1/2 top-2 z-10 h-2 w-16 -translate-x-1/2 rounded-full bg-m3-surface-5" />}
+                  {streamUrl && (
+                    <img
+                      src={streamUrl}
+                      alt="Live Android Screen"
+                      className="absolute left-1/2 top-1/2 z-10 block rounded-[1.55rem] object-contain shadow-inner"
+                      style={
+                        orientation === 'landscape'
+                          ? { width: viewerSize.height - 12, height: viewerSize.width - 12, transform: 'translate(-50%, -50%) rotate(90deg)' }
+                          : { width: 'calc(100% - 12px)', height: 'calc(100% - 12px)', transform: 'translate(-50%, -50%)' }
+                      }
+                    />
+                  )}
                   <canvas
                     ref={canvasRef}
                     width={360}
                     height={800}
-                    className="absolute left-1/2 top-1/2 block rounded-[1.55rem] bg-[#0F1626] shadow-inner"
+                    className={`absolute left-1/2 top-1/2 block rounded-[1.55rem] bg-[#0F1626] shadow-inner ${streamUrl ? 'hidden' : ''}`}
                     style={
                       orientation === 'landscape'
                         ? { width: viewerSize.height - 12, height: viewerSize.width - 12, transform: 'translate(-50%, -50%) rotate(90deg)' }
